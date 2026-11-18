@@ -50,6 +50,7 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
   // Estados para confirmación rápida de reserva
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [creatingBooking, setCreatingBooking] = useState(false);
+  const [confirmingAuto, setConfirmingAuto] = useState(false);
   const [activeReservation, setActiveReservation] = useState<any | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -366,6 +367,39 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
     }
   }
 
+  // Creación 100% Automática vía IA desde el Comprobante (1 Clic)
+  async function handleAutoConfirmBooking() {
+    if (!selectedConversation) return;
+    setConfirmingAuto(true);
+    try {
+      const res = await fetch('/api/telegram/bookings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: selectedConversation.id,
+          auto_create: true,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'No se pudo crear la reserva automática.');
+      }
+
+      setToastMessage(`🎉 ¡Reserva #${data.reservationCode} creada automáticamente y confirmada al cliente por Telegram!`);
+      setTimeout(() => setToastMessage(null), 8000);
+
+      loadMessages(selectedConversation.id, true);
+      loadActiveReservation();
+      loadConversations(true);
+    } catch (err: any) {
+      console.error('Error en creación automática:', err);
+      alert(err.message || 'Error al crear la reserva automática.');
+    } finally {
+      setConfirmingAuto(false);
+    }
+  }
+
   // Renderizador de Contenido de Mensajes (Soporte de Fotos de Comprobante / DNI)
   function renderMessageContent(content: string) {
     const mediaRegex = /\[MEDIA_ATTACHMENT:file_id=([^&\]]+)&type=([^&\]]+)(?:&name=([^\]]+))?\]/g;
@@ -384,24 +418,52 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
       <div className="space-y-2">
         {textWithoutMedia && <p>{textWithoutMedia}</p>}
         {fileType === 'photo' ? (
-          <div
-            onClick={() => setPreviewImageUrl(`/api/telegram/file?file_id=${fileId}`)}
-            className="group relative rounded-xl overflow-hidden border border-slate-700 bg-slate-950/70 cursor-pointer max-w-sm hover:border-sky-500 transition-all shadow-md"
-          >
-            <img
-              src={`/api/telegram/file?file_id=${fileId}`}
-              alt="Comprobante / Documentación adjunta"
-              className="w-full max-h-56 object-contain bg-slate-950/90 group-hover:scale-102 transition-transform"
-              loading="lazy"
-            />
-            <div className="p-2 bg-slate-900/90 border-t border-slate-800 flex items-center justify-between text-[11px]">
-              <span className="flex items-center gap-1.5 font-semibold text-emerald-400">
-                <Receipt className="w-3.5 h-3.5" /> Comprobante / Foto Adjunta
-              </span>
-              <span className="text-[10px] text-sky-400 group-hover:underline flex items-center gap-1">
-                <Maximize2 className="w-3 h-3" /> Ver en Grande
-              </span>
+          <div className="space-y-2 max-w-sm">
+            <div
+              onClick={() => setPreviewImageUrl(`/api/telegram/file?file_id=${fileId}`)}
+              className="group relative rounded-xl overflow-hidden border border-slate-700 bg-slate-950/70 cursor-pointer hover:border-sky-500 transition-all shadow-md"
+            >
+              <img
+                src={`/api/telegram/file?file_id=${fileId}`}
+                alt="Comprobante / Documentación adjunta"
+                className="w-full max-h-56 object-contain bg-slate-950/90 group-hover:scale-102 transition-transform"
+                loading="lazy"
+              />
+              <div className="p-2 bg-slate-900/90 border-t border-slate-800 flex items-center justify-between text-[11px]">
+                <span className="flex items-center gap-1.5 font-semibold text-emerald-400">
+                  <Receipt className="w-3.5 h-3.5" /> Comprobante / Foto Adjunta
+                </span>
+                <span className="text-[10px] text-sky-400 group-hover:underline flex items-center gap-1">
+                  <Maximize2 className="w-3 h-3" /> Ver en Grande
+                </span>
+              </div>
             </div>
+
+            {/* Botón de 1 Clic al lado/debajo de la foto para confirmar seña */}
+            {!activeReservation && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleAutoConfirmBooking();
+                }}
+                disabled={confirmingAuto}
+                className="w-full py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-950/50 transition-all border border-emerald-400/30 disabled:opacity-50"
+                title="El único paso humano: confirmar que viste el ingreso en el banco para que la IA cree la reserva y emita el número al huésped"
+              >
+                {confirmingAuto ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Creando reserva con IA...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4 text-emerald-200" />
+                    <span>Confirmar Seña y Crear Reserva (1 Clic)</span>
+                  </>
+                )}
+              </button>
+            )}
           </div>
         ) : (
           <a

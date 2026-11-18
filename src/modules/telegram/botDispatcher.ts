@@ -272,7 +272,7 @@ export async function processTelegramUpdate(update: TelegramUpdate): Promise<{ s
       await telegram.sendMessage(chatId, docReply, { parse_mode: 'HTML' });
       return { success: true };
     } else {
-      const receiptNotice = `📄 <b>¡Muchas gracias por enviarnos el comprobante de transferencia!</b>\n\nNuestro equipo de recepción ya está verificando el ingreso en la cuenta bancaria. En cuanto confirmemos la acreditación, el sistema emitirá tu <b>Número Oficial de Reserva</b> y te solicitaremos la patente de tu auto para la cochera cubierta y las fotos del DNI. ¡Muchas gracias!`;
+      const receiptNotice = `📄 <b>¡Comprobante de seña recibido!</b>\n\nNuestro equipo de recepción está verificando la acreditación en la cuenta bancaria. En instantes te confirmamos. ¡Muchas gracias!`;
       await supabase.from('messages').insert({
         conversation_id: conversationId,
         sender_type: 'assistant',

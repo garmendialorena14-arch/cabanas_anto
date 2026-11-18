@@ -6,6 +6,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuthRoles } from '@/shared/lib/supabase/authServerHelper';
 import { TelegramClient } from '@/modules/telegram/telegramClient';
+import { GoogleGenAI } from '@google/genai';
+import { getGeminiApiKey } from '@/modules/ai/geminiClient';
 
 export const dynamic = 'force-dynamic';
 
@@ -59,7 +61,12 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const {
+      auto_create,
       conversation_id,
+      notes,
+    } = body;
+
+    let {
       contact_id,
       cabin_id,
       check_in_date,
@@ -70,14 +77,111 @@ export async function POST(req: NextRequest) {
       total_usd,
       sena_usd,
       vehicle_license_plate,
-      notes,
     } = body;
 
-    if (!cabin_id || !check_in_date || !check_out_date || !guest_name) {
-      return NextResponse.json(
-        { error: 'cabin_id, check_in_date, check_out_date y guest_name son obligatorios.' },
-        { status: 400 }
-      );
+    // ==================================================================
+    // MODO AUTOMÁTICO VÍA IA: Extraer datos directamente de la conversación
+    // ==================================================================
+    if (auto_create && conversation_id) {
+      const { data: conv } = await supabase
+        .from('conversations')
+        .select('*, contacts(*)')
+        .eq('id', conversation_id)
+        .single();
+
+      if (conv) {
+        contact_id = conv.contact_id;
+        guest_name = guest_name || conv.contacts?.full_name || 'Huésped Telegram';
+        guest_phone = guest_phone || conv.contacts?.phone || '';
+      }
+
+      // Obtener últimos mensajes de la conversación
+      const { data: convMsgs } = await supabase
+        .from('messages')
+        .select('sender_type, content, created_at')
+        .eq('conversation_id', conversation_id)
+        .order('created_at', { ascending: false })
+        .limit(20);
+
+      const transcript = (convMsgs || [])
+        .reverse()
+        .map((m: any) => `${m.sender_type === 'user' ? 'Huésped' : 'Asistente'}: ${m.content}`)
+        .join('\n');
+
+      const apiKey = getGeminiApiKey();
+      if (apiKey) {
+        try {
+          const ai = new GoogleGenAI({ apiKey });
+          const prompt = `Analiza la conversación entre el huésped y el complejo de cabañas para extraer los datos de la reserva en formato JSON estricto.
+Campos a extraer:
+- check_in_date (YYYY-MM-DD)
+- check_out_date (YYYY-MM-DD)
+- guest_count (número de personas entero, ej 4)
+- total_usd (número del total en USD acordado o cotizado, ej 300)
+- sena_usd (número de la seña en USD, ej 90)
+- cabin_number (número de cabaña 1 a 12 adecuada para esa cantidad de personas, ej 1)
+- guest_name (nombre completo del titular si está disponible)
+- guest_phone (teléfono si fue mencionado)
+
+Conversación:
+${transcript}
+
+Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicaciones:`;
+
+          const aiRes = await ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite',
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            config: { temperature: 0.1 },
+          });
+
+          const rawJson = (aiRes.text || '').replace(/```json/g, '').replace(/```/g, '').trim();
+          const parsed = JSON.parse(rawJson);
+
+          if (parsed.check_in_date) check_in_date = parsed.check_in_date;
+          if (parsed.check_out_date) check_out_date = parsed.check_out_date;
+          if (parsed.guest_count) guest_count = Number(parsed.guest_count);
+          if (parsed.total_usd) total_usd = Number(parsed.total_usd);
+          if (parsed.sena_usd) sena_usd = Number(parsed.sena_usd);
+          if (parsed.guest_name && !guest_name) guest_name = parsed.guest_name;
+          if (parsed.guest_phone && !guest_phone) guest_phone = parsed.guest_phone;
+
+          // Asignar cabaña según número sugerido
+          if (parsed.cabin_number) {
+            const { data: matchedCabin } = await supabase
+              .from('cabins')
+              .select('id')
+              .eq('cabin_number', Number(parsed.cabin_number))
+              .maybeSingle();
+
+            if (matchedCabin) cabin_id = matchedCabin.id;
+          }
+        } catch (aiErr) {
+          console.warn('Extracción con IA falló, usando datos por defecto:', aiErr);
+        }
+      }
+    }
+
+    // Fallbacks si falta algún campo
+    if (!cabin_id) {
+      const targetPax = Number(guest_count) || 4;
+      const { data: fallbackCabin } = await supabase
+        .from('cabins')
+        .select('id')
+        .gte('max_guests', targetPax)
+        .order('cabin_number')
+        .limit(1)
+        .single();
+
+      cabin_id = fallbackCabin?.id;
+    }
+
+    if (!check_in_date) {
+      const now = new Date();
+      check_in_date = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    }
+    if (!check_out_date) {
+      const inDate = new Date(check_in_date);
+      check_out_date = new Date(inDate.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     }
 
     // 1. Obtener Cabaña
@@ -118,7 +222,7 @@ export async function POST(req: NextRequest) {
       .from('reservations')
       .insert({
         cabin_id: cabin.id,
-        guest_name: (guest_name || '').trim(),
+        guest_name: (guest_name || 'Huésped Telegram').trim(),
         guest_phone: (guest_phone || '').trim() || null,
         guest_count: Number(guest_count) || 2,
         check_in_date,
