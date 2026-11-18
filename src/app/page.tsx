@@ -140,12 +140,12 @@ export default function PublicLandingPage() {
             <span className="text-stone-300 hidden md:inline">Cabañas en el bosque a pasos del mar</span>
             <span className="text-stone-600 hidden md:inline">·</span>
             <a
-              href="https://t.me/CabanasAnto_Bot"
+              href="https://t.me/CabanasAntoOficial_bot"
               target="_blank"
               rel="noopener noreferrer"
               className="text-sky-400 hover:text-sky-300 font-medium underline inline-flex items-center gap-1"
             >
-              <span>Consultas 24/7 con nuestro Asistente en Telegram (@CabanasAnto_Bot)</span>
+              <span>Consultas 24/7 con nuestro Asistente en Telegram (@CabanasAntoOficial_bot)</span>
             </a>
           </div>
           <Link
@@ -182,7 +182,7 @@ export default function PublicLandingPage() {
           </div>
           <div className="flex items-center gap-3">
             <a
-              href="https://t.me/CabanasAnto_Bot"
+              href="https://t.me/CabanasAntoOficial_bot"
               target="_blank"
               rel="noopener noreferrer"
               className="hidden sm:inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 font-medium text-xs sm:text-sm transition-all"
@@ -233,7 +233,7 @@ export default function PublicLandingPage() {
               Calcular Presupuesto
             </a>
             <a
-              href="https://t.me/CabanasAnto_Bot"
+              href="https://t.me/CabanasAntoOficial_bot"
               target="_blank"
               rel="noopener noreferrer"
               className="px-6 py-3 rounded-full bg-sky-600/90 hover:bg-sky-600 border border-sky-400/50 backdrop-blur-sm text-white font-semibold text-xs sm:text-sm shadow-lg transition-all inline-flex items-center gap-2"
@@ -443,7 +443,7 @@ export default function PublicLandingPage() {
                   </div>
                 </div>
                 <a
-                  href="https://t.me/CabanasAnto_Bot"
+                  href="https://t.me/CabanasAntoOficial_bot"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-semibold text-xs transition-colors shrink-0 shadow-sm"
@@ -628,7 +628,7 @@ export default function PublicLandingPage() {
             <div>
               <span className="font-serif font-bold text-stone-200">Cabañas Anto</span>
               <p className="text-[11px] text-stone-400">Mar Azul, Partido de Villa Gesell, Buenos Aires, Argentina</p>
-              <p className="text-[10px] text-stone-500 mt-0.5">Atención y reservas 24/7 en Telegram: @CabanasAnto_Bot</p>
+              <p className="text-[10px] text-stone-500 mt-0.5">Atención y reservas 24/7 en Telegram: @CabanasAntoOficial_bot</p>
             </div>
           </div>
           <div className="flex items-center gap-6 text-[11px]">
@@ -642,7 +642,7 @@ export default function PublicLandingPage() {
 
       {/* Botón Flotante Fijo de Telegram */}
       <a
-        href="https://t.me/CabanasAnto_Bot"
+        href="https://t.me/CabanasAntoOficial_bot"
         target="_blank"
         rel="noopener noreferrer"
         aria-label="Chatear con el Asistente en Telegram"
