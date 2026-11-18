@@ -1,0 +1,35 @@
+# Dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# Testing
+/coverage
+
+# Next.js build output
+/.next/
+/build_output/
+/out/
+
+# Production
+/build
+
+# Misc
+.DS_Store
+*.pem
+
+# Local env files - CRÍTICO: Jamás versionar secretos reales
+.env*.local
+.env
+Gemini.txt
+Telegram.txt
+*.key
+*.pem
+
+# Vercel & Netlify
+.vercel
+.netlify
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
