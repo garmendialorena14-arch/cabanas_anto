@@ -30,8 +30,26 @@ export interface TelegramUpdate {
     date: number;
     text?: string;
     caption?: string;
-    photo?: any[];
-    document?: any;
+    photo?: Array<{
+      file_id: string;
+      file_unique_id: string;
+      width: number;
+      height: number;
+      file_size?: number;
+    }>;
+    document?: {
+      file_id: string;
+      file_unique_id: string;
+      file_name?: string;
+      mime_type?: string;
+      file_size?: number;
+    };
+    contact?: {
+      phone_number: string;
+      first_name: string;
+      last_name?: string;
+      user_id?: number;
+    };
   };
 }
 
@@ -82,11 +100,29 @@ export async function processTelegramUpdate(update: TelegramUpdate): Promise<{ s
     .eq('external_id', chatId)
     .maybeSingle();
 
+  // Captura automática de teléfono desde Telegram Contact o regex de texto
+  let detectedPhone = message.contact?.phone_number?.trim() || null;
+  if (!detectedPhone && rawText) {
+    const phoneMatch = rawText.match(/(?:(?:\+?54\s*9?)|0)?\s*(?:11|[2368]\d)\s*[\s-]?\d{3,4}[\s-]?\d{4}/);
+    if (phoneMatch) {
+      detectedPhone = phoneMatch[0].replace(/[\s-]+/g, '');
+    }
+  }
+
   if (existingContact) {
     contactId = existingContact.id;
-    // Actualizar nombre si cambió
+    // Actualizar nombre o teléfono si se capturaron
+    const contactUpdates: Record<string, any> = {};
     if (fullName && existingContact.full_name !== fullName) {
-      await supabase.from('contacts').update({ full_name: fullName, username: from.username }).eq('id', contactId);
+      contactUpdates.full_name = fullName;
+      contactUpdates.username = from.username;
+    }
+    if (detectedPhone && !existingContact.phone) {
+      contactUpdates.phone = detectedPhone;
+    }
+    if (Object.keys(contactUpdates).length > 0) {
+      contactUpdates.updated_at = new Date().toISOString();
+      await supabase.from('contacts').update(contactUpdates).eq('id', contactId);
     }
   } else {
     const { data: newContact, error: contactErr } = await supabase
@@ -95,6 +131,7 @@ export async function processTelegramUpdate(update: TelegramUpdate): Promise<{ s
         external_id: chatId,
         full_name: fullName,
         username: from.username,
+        phone: detectedPhone,
         channel: 'telegram',
       })
       .select('id')
@@ -156,23 +193,94 @@ export async function processTelegramUpdate(update: TelegramUpdate): Promise<{ s
     conversationStatus = newConv.status as any;
   }
 
-  // 4. Registrar mensaje del usuario en la base de datos
+  // 4. Extracción de Archivo Adjunto (Foto de Comprobante / DNI o Documento)
+  let fileId: string | null = null;
+  let fileType: 'photo' | 'document' | null = null;
+  let fileName: string | null = null;
+
+  if (message.photo && message.photo.length > 0) {
+    const largestPhoto = message.photo[message.photo.length - 1];
+    fileId = largestPhoto.file_id;
+    fileType = 'photo';
+  } else if (message.document) {
+    fileId = message.document.file_id;
+    fileType = 'document';
+    fileName = message.document.file_name || 'documento';
+  }
+
+  let storedUserContent = rawText;
+  if (fileId) {
+    const tag = `[MEDIA_ATTACHMENT:file_id=${fileId}&type=${fileType}${fileName ? `&name=${encodeURIComponent(fileName)}` : ''}]`;
+    storedUserContent = rawText ? `${rawText}\n\n${tag}` : tag;
+  }
+
+  // Registrar mensaje del usuario en la base de datos
   await supabase.from('messages').insert({
     conversation_id: conversationId,
     sender_type: 'user',
-    content: rawText || (message.photo ? '[Foto/Comprobante enviado]' : '[Archivo adjunto]'),
+    content: storedUserContent,
   });
 
-  // Si no hay texto (por ejemplo el usuario mandó un comprobante/foto)
-  if (!rawText && (message.photo || message.document)) {
-    const receiptNotice = 'Hemos recibido tu comprobante/archivo. El equipo de recepción lo revisará para confirmar tu operación.';
-    await supabase.from('messages').insert({
-      conversation_id: conversationId,
-      sender_type: 'assistant',
-      content: receiptNotice,
-    });
-    await telegram.sendMessage(chatId, receiptNotice);
-    return { success: true };
+  // 4b. Detección automática de Patente del vehículo
+  const plateMatch = rawText.match(/\b([A-Z]{3}\s*\d{3}|[A-Z]{2}\s*\d{3}\s*[A-Z]{2})\b/i);
+  if (plateMatch && !isOwner) {
+    const detectedPlate = plateMatch[0].replace(/\s+/g, ' ').toUpperCase();
+    const { data: activeRes } = await supabase
+      .from('reservations')
+      .select('id, parking_spot_number, vehicle_license_plate')
+      .is('vehicle_license_plate', null)
+      .in('status', ['senada', 'confirmada'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (activeRes) {
+      await supabase
+        .from('reservations')
+        .update({ vehicle_license_plate: detectedPlate, updated_at: new Date().toISOString() })
+        .eq('id', activeRes.id);
+
+      const plateReply = `🚗 <b>¡Excelente!</b> Registramos la patente <b>${detectedPlate}</b> para tu cochera cubierta asignada (Cochera Nº ${activeRes.parking_spot_number || 'asignada'}).\n\nSi aún no lo hiciste, recuerda enviarnos las fotos del frente y dorso del DNI o Pasaporte para completar tu ficha de registro. ¡Muchas gracias!`;
+      await supabase.from('messages').insert({
+        conversation_id: conversationId,
+        sender_type: 'assistant',
+        content: plateReply,
+      });
+      await telegram.sendMessage(chatId, plateReply, { parse_mode: 'HTML' });
+      return { success: true };
+    }
+  }
+
+  // 4c. Si el usuario envió una foto o comprobante
+  if (fileId && !isOwner) {
+    // Verificar si ya tiene una reserva confirmada (en tal caso es foto de DNI)
+    const { data: userRes } = await supabase
+      .from('reservations')
+      .select('id')
+      .in('status', ['senada', 'confirmada'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (userRes) {
+      const docReply = `🪪 <b>¡Foto / Documento recibido con éxito!</b>\n\nHa quedado adjunta a tu ficha de estadía. Nuestro equipo de recepción la revisará para tener tu registro listo al momento de tu llegada a Cabañas Anto. ¡Muchas gracias!`;
+      await supabase.from('messages').insert({
+        conversation_id: conversationId,
+        sender_type: 'assistant',
+        content: docReply,
+      });
+      await telegram.sendMessage(chatId, docReply, { parse_mode: 'HTML' });
+      return { success: true };
+    } else {
+      const receiptNotice = `📄 <b>¡Muchas gracias por enviarnos el comprobante de transferencia!</b>\n\nNuestro equipo de recepción ya está verificando el ingreso en la cuenta bancaria. En cuanto confirmemos la acreditación, el sistema emitirá tu <b>Número Oficial de Reserva</b> y te solicitaremos la patente de tu auto para la cochera cubierta y las fotos del DNI. ¡Muchas gracias!`;
+      await supabase.from('messages').insert({
+        conversation_id: conversationId,
+        sender_type: 'assistant',
+        content: receiptNotice,
+      });
+      await telegram.sendMessage(chatId, receiptNotice, { parse_mode: 'HTML' });
+      return { success: true };
+    }
   }
 
   // 5. DETECCIÓN DE PALABRAS CLAVE PARA CONTROL HUMANO Y COMANDOS

@@ -10,15 +10,20 @@ import {
   RefreshCw,
   Search,
   CheckCircle2,
-  AlertCircle,
   Calendar,
   Sparkles,
   Phone,
   Clock,
-  ChevronRight,
-  Filter,
+  Car,
+  Receipt,
+  Maximize2,
+  X,
+  ExternalLink,
+  FileText,
+  DollarSign,
+  AlertTriangle,
 } from 'lucide-react';
-import { Conversation, Message, Assistant } from '@/shared/types';
+import { Conversation, Message, Assistant, Cabin } from '@/shared/types';
 import { createClient } from '@/shared/lib/supabase/client';
 
 interface TelegramCrmInboxViewProps {
@@ -28,6 +33,7 @@ interface TelegramCrmInboxViewProps {
 export default function TelegramCrmInboxView({ onOpenCreateReservation }: TelegramCrmInboxViewProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [assistants, setAssistants] = useState<Assistant[]>([]);
+  const [cabins, setCabins] = useState<any[]>([]);
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
@@ -38,12 +44,33 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
   const [filterMode, setFilterMode] = useState<'all' | 'human_takeover' | 'ai_active'>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Estados para comprobantes y visualización Lightbox
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+
+  // Estados para confirmación rápida de reserva
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [creatingBooking, setCreatingBooking] = useState(false);
+  const [activeReservation, setActiveReservation] = useState<any | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Formulario de Reserva Rápida
+  const [bookingGuestName, setBookingGuestName] = useState('');
+  const [bookingGuestPhone, setBookingGuestPhone] = useState('');
+  const [bookingCheckIn, setBookingCheckIn] = useState('');
+  const [bookingCheckOut, setBookingCheckOut] = useState('');
+  const [bookingGuestCount, setBookingGuestCount] = useState(2);
+  const [bookingCabinId, setBookingCabinId] = useState('');
+  const [bookingTotalUsd, setBookingTotalUsd] = useState(0);
+  const [bookingSenaUsd, setBookingSenaUsd] = useState(0);
+  const [bookingLicensePlate, setBookingLicensePlate] = useState('');
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // 1. Cargar lista de conversaciones y asistentes
+  // 1. Cargar lista de conversaciones, asistentes y cabañas
   useEffect(() => {
     loadConversations();
     loadAssistants();
+    loadCabins();
 
     // Polling ligero cada 6 segundos para sincronizar nuevos mensajes
     const interval = setInterval(() => {
@@ -53,12 +80,14 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
     return () => clearInterval(interval);
   }, []);
 
-  // 2. Cargar mensajes cuando cambia la conversación seleccionada
+  // 2. Cargar mensajes y reserva activa cuando cambia la conversación seleccionada
   useEffect(() => {
     if (selectedConvId) {
       loadMessages(selectedConvId);
+      loadActiveReservation();
     } else {
       setMessages([]);
+      setActiveReservation(null);
     }
   }, [selectedConvId]);
 
@@ -77,11 +106,21 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
     }
   }
 
+  async function loadCabins() {
+    try {
+      const supabase = createClient();
+      const { data } = await supabase.from('cabins').select('*').order('cabin_number');
+      if (data) setCabins(data);
+    } catch (err) {
+      console.error('Error cargando cabañas:', err);
+    }
+  }
+
   async function loadConversations(isSilent = false) {
     if (!isSilent) setLoadingList(true);
     try {
       const supabase = createClient();
-      const { data, error } = await supabase
+      const { data } = await supabase
         .from('conversations')
         .select('*, contacts(*), assistants(*)')
         .order('last_message_at', { ascending: false });
@@ -111,6 +150,32 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
       console.error('Error cargando mensajes:', err);
     } finally {
       if (!isSilent) setLoadingChat(false);
+    }
+  }
+
+  async function loadActiveReservation() {
+    try {
+      const conv = conversations.find((c) => c.id === selectedConvId);
+      if (!conv?.contact) return;
+
+      const supabase = createClient();
+      let query = supabase
+        .from('reservations')
+        .select('*, cabins(*)')
+        .in('status', ['senada', 'confirmada', 'checkin'])
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (conv.contact.phone) {
+        query = query.eq('guest_phone', conv.contact.phone);
+      } else if (conv.contact.full_name) {
+        query = query.ilike('guest_name', `%${conv.contact.full_name}%`);
+      }
+
+      const { data } = await query.maybeSingle();
+      setActiveReservation(data || null);
+    } catch (err) {
+      console.warn('Error al verificar reserva activa:', err);
     }
   }
 
@@ -182,7 +247,7 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
     }
   }
 
-  // Enviar mensaje humano a Telegram
+  // Enviar mensaje manual a Telegram
   async function handleSendMessage(e: React.FormEvent) {
     e.preventDefault();
     if (!inputText.trim() || !selectedConversation) return;
@@ -204,7 +269,6 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
       const data = await res.json();
       if (data.ok && data.message) {
         setMessages((prev) => [...prev, data.message]);
-        // Si estaba en ai_active, ahora pasa a human_takeover
         setConversations((prev) =>
           prev.map((c) =>
             c.id === selectedConversation.id
@@ -220,14 +284,143 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
       }
     } catch (err) {
       console.error('Error al enviar mensaje a Telegram:', err);
-      setInputText(textToSend); // restaurar si falló
+      setInputText(textToSend);
     } finally {
       setSendingMsg(false);
     }
   }
 
+  // Abrir Modal de Confirmación y Pre-cargar Datos
+  function handleOpenBookingModal() {
+    if (!selectedConversation) return;
+
+    // Pre-cargar datos deducidos
+    const contact = selectedConversation.contact;
+    setBookingGuestName(contact?.full_name || '');
+    setBookingGuestPhone(contact?.phone || '');
+    setBookingGuestCount(4);
+
+    // Calcular fechas tentativas (ej: próximo fin de semana o dentro de 2 días)
+    const now = new Date();
+    const defaultIn = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const defaultOut = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    setBookingCheckIn(defaultIn);
+    setBookingCheckOut(defaultOut);
+
+    // Seleccionar primera cabaña por defecto
+    const defaultCabin = cabins[0];
+    if (defaultCabin) {
+      setBookingCabinId(defaultCabin.id);
+      const total = Number(defaultCabin.base_rate_usd) * 3;
+      setBookingTotalUsd(total);
+      setBookingSenaUsd(Math.round(total * 0.3));
+    }
+
+    setBookingLicensePlate('');
+    setShowConfirmModal(true);
+  }
+
+  // Confirmar y Crear Reserva en el Panel + Notificar en Telegram
+  async function handleConfirmAndCreateBooking(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedConversation || !bookingCabinId) return;
+
+    setCreatingBooking(true);
+    try {
+      const res = await fetch('/api/telegram/bookings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: selectedConversation.id,
+          contact_id: selectedConversation.contact_id,
+          cabin_id: bookingCabinId,
+          check_in_date: bookingCheckIn,
+          check_out_date: bookingCheckOut,
+          guest_name: bookingGuestName,
+          guest_phone: bookingGuestPhone,
+          guest_count: bookingGuestCount,
+          total_usd: bookingTotalUsd,
+          sena_usd: bookingSenaUsd,
+          vehicle_license_plate: bookingLicensePlate || null,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'No se pudo crear la reserva.');
+      }
+
+      setShowConfirmModal(false);
+      setToastMessage(`¡Reserva #${data.reservationCode} creada exitosamente y notificada por Telegram!`);
+      setTimeout(() => setToastMessage(null), 8000);
+
+      // Recargar mensajes y estado
+      loadMessages(selectedConversation.id, true);
+      loadActiveReservation();
+      loadConversations(true);
+    } catch (err: any) {
+      console.error('Error creando reserva automática:', err);
+      alert(err.message || 'Error al crear la reserva.');
+    } finally {
+      setCreatingBooking(false);
+    }
+  }
+
+  // Renderizador de Contenido de Mensajes (Soporte de Fotos de Comprobante / DNI)
+  function renderMessageContent(content: string) {
+    const mediaRegex = /\[MEDIA_ATTACHMENT:file_id=([^&\]]+)&type=([^&\]]+)(?:&name=([^\]]+))?\]/g;
+    const match = mediaRegex.exec(content);
+
+    if (!match) {
+      return <span>{content}</span>;
+    }
+
+    const fileId = match[1];
+    const fileType = match[2];
+    const fileName = match[3] ? decodeURIComponent(match[3]) : 'Archivo adjunto';
+    const textWithoutMedia = content.replace(mediaRegex, '').trim();
+
+    return (
+      <div className="space-y-2">
+        {textWithoutMedia && <p>{textWithoutMedia}</p>}
+        {fileType === 'photo' ? (
+          <div
+            onClick={() => setPreviewImageUrl(`/api/telegram/file?file_id=${fileId}`)}
+            className="group relative rounded-xl overflow-hidden border border-slate-700 bg-slate-950/70 cursor-pointer max-w-sm hover:border-sky-500 transition-all shadow-md"
+          >
+            <img
+              src={`/api/telegram/file?file_id=${fileId}`}
+              alt="Comprobante / Documentación adjunta"
+              className="w-full max-h-56 object-contain bg-slate-950/90 group-hover:scale-102 transition-transform"
+              loading="lazy"
+            />
+            <div className="p-2 bg-slate-900/90 border-t border-slate-800 flex items-center justify-between text-[11px]">
+              <span className="flex items-center gap-1.5 font-semibold text-emerald-400">
+                <Receipt className="w-3.5 h-3.5" /> Comprobante / Foto Adjunta
+              </span>
+              <span className="text-[10px] text-sky-400 group-hover:underline flex items-center gap-1">
+                <Maximize2 className="w-3 h-3" /> Ver en Grande
+              </span>
+            </div>
+          </div>
+        ) : (
+          <a
+            href={`/api/telegram/file?file_id=${fileId}`}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-2 p-2.5 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 text-xs text-sky-300 font-medium transition-colors"
+          >
+            <FileText className="w-4 h-4 text-sky-400" />
+            <span className="truncate max-w-[200px]">{fileName}</span>
+            <ExternalLink className="w-3 h-3 text-slate-400" />
+          </a>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl flex flex-col md:flex-row h-[750px]">
+    <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl flex flex-col md:flex-row h-[750px] relative">
       {/* 1. Panel Lateral Izquierdo: Lista de Chats */}
       <div className="w-full md:w-80 lg:w-96 border-b md:border-b-0 md:border-r border-slate-800 flex flex-col bg-slate-950/60">
         {/* Encabezado Lista */}
@@ -374,37 +567,44 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
                     <span className="text-xs text-sky-400">@{selectedConversation.contact.username}</span>
                   )}
                 </div>
-                <div className="text-[11px] text-slate-400 flex items-center gap-3">
-                  <span>Chat ID: {selectedConversation.contact?.external_id}</span>
+                <div className="text-[11px] text-slate-400 flex items-center gap-3 mt-0.5">
+                  {selectedConversation.contact?.phone ? (
+                    <a
+                      href={`tel:${selectedConversation.contact.phone}`}
+                      className="text-xs text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1.5 transition-colors"
+                      title="Llamada telefónica directa"
+                    >
+                      <Phone className="w-3 h-3 text-emerald-400" />
+                      {selectedConversation.contact.phone}
+                    </a>
+                  ) : (
+                    <span className="text-[11px] text-slate-500 italic flex items-center gap-1">
+                      <Phone className="w-2.5 h-2.5 text-slate-600" /> Sin teléfono registrado
+                    </span>
+                  )}
                   <span>•</span>
-                  <span>Canal: Telegram</span>
+                  <span>Chat ID: {selectedConversation.contact?.external_id}</span>
                 </div>
               </div>
             </div>
 
-            {/* Acciones del Header: Selector Asistente y Botón Control Humano */}
-            <div className="flex items-center gap-2.5">
-              {/* Selector de Asistente IA */}
-              <div className="flex items-center gap-1.5 text-xs bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1">
-                <Sparkles className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                <select
-                  value={selectedConversation.assistant_id || ''}
-                  onChange={(e) => handleChangeAssistant(e.target.value)}
-                  className="bg-transparent text-slate-300 text-xs focus:outline-none cursor-pointer"
-                >
-                  {assistants.map((asst) => (
-                    <option key={asst.id} value={asst.id} className="bg-slate-900 text-slate-200">
-                      {asst.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            {/* Acciones de Cabecera: Confirmar Seña / Selector Asistente / Control Humano */}
+            <div className="flex items-center gap-2">
+              {/* Botón Principal: Confirmar Seña y Crear Reserva */}
+              <button
+                onClick={handleOpenBookingModal}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-950/40 transition-all border border-emerald-500/30"
+                title="Confirmar seña y emitir Nº de Reserva al huésped"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Confirmar Seña y Crear Reserva
+              </button>
 
               {/* Botón de Control Humano / IA */}
               <button
                 onClick={toggleHumanTakeover}
                 disabled={togglingStatus}
-                className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
                   selectedConversation.status === 'ai_active'
                     ? 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border-amber-500/30'
                     : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
@@ -418,17 +618,33 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
                 {selectedConversation.status === 'ai_active' ? (
                   <>
                     <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
-                    Pausar IA & Tomar Control
+                    Pausar IA
                   </>
                 ) : (
                   <>
                     <Bot className="w-3.5 h-3.5 text-emerald-400" />
-                    Reactivar Asistente IA
+                    Reactivar IA
                   </>
                 )}
               </button>
 
-              {/* Botón Rápido Crear Reserva */}
+              {/* Selector de Asistente IA */}
+              <div className="hidden lg:flex items-center gap-1 text-xs bg-slate-950 border border-slate-800 rounded-xl px-2 py-1">
+                <Sparkles className="w-3 h-3 text-indigo-400 shrink-0" />
+                <select
+                  value={selectedConversation.assistant_id || ''}
+                  onChange={(e) => handleChangeAssistant(e.target.value)}
+                  className="bg-transparent text-slate-300 text-[11px] focus:outline-none cursor-pointer"
+                >
+                  {assistants.map((asst) => (
+                    <option key={asst.id} value={asst.id} className="bg-slate-900 text-slate-200">
+                      {asst.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Botón Alternativo Carga Manual */}
               {onOpenCreateReservation && (
                 <button
                   onClick={() =>
@@ -436,16 +652,44 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
                       selectedConversation.contact?.full_name || 'Huésped Telegram'
                     )
                   }
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-500 text-white transition-colors"
+                  className="hidden xl:inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors border border-slate-700"
+                  title="Carga manual tradicional"
                 >
-                  <Calendar className="w-3.5 h-3.5" />
-                  Crear Reserva
+                  <Calendar className="w-3 h-3 text-slate-400" />
+                  Manual
                 </button>
               )}
             </div>
           </div>
 
-          {/* Banner de Estado de Control */}
+          {/* Banner de Reserva Activa */}
+          {activeReservation && (
+            <div className="bg-emerald-950/40 border-b border-emerald-800/40 px-4 py-2 text-xs text-emerald-300 flex items-center justify-between">
+              <div className="flex items-center gap-2 font-medium">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span>
+                  Reserva Activa: <b>#ANTO-{activeReservation.id.slice(0, 8).toUpperCase()}</b> • Cabaña{' '}
+                  {activeReservation.cabins?.cabin_number || '?'} • {activeReservation.check_in_date} al{' '}
+                  {activeReservation.check_out_date} ({activeReservation.total_nights} noches) • Seña:{' '}
+                  <b>USD ${activeReservation.sena_paid_usd_equiv || activeReservation.sena_usd_required}</b>
+                </span>
+                {activeReservation.vehicle_license_plate ? (
+                  <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-200 font-mono text-[10px] flex items-center gap-1">
+                    <Car className="w-3 h-3 text-sky-400" /> Patente: {activeReservation.vehicle_license_plate}
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[10px]">
+                    ⚠️ Patente pendiente
+                  </span>
+                )}
+              </div>
+              <span className="text-[10px] text-emerald-400 font-semibold bg-emerald-500/15 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                Seña Confirmada
+              </span>
+            </div>
+          )}
+
+          {/* Banner de Estado de Control Humano */}
           {selectedConversation.status === 'human_takeover' && (
             <div className="bg-amber-950/30 border-b border-amber-800/40 px-4 py-2 text-xs text-amber-300 flex items-center justify-between">
               <span className="flex items-center gap-1.5 font-medium">
@@ -457,6 +701,19 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
                 className="underline hover:text-white font-semibold text-[11px]"
               >
                 Reactivar IA ahora
+              </button>
+            </div>
+          )}
+
+          {/* Toast de Confirmación Exitosa */}
+          {toastMessage && (
+            <div className="bg-emerald-600 text-white px-4 py-2 text-xs font-bold flex items-center justify-between shadow-lg">
+              <span className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4" />
+                {toastMessage}
+              </span>
+              <button onClick={() => setToastMessage(null)} className="text-white hover:text-slate-200">
+                <X className="w-4 h-4" />
               </button>
             </div>
           )}
@@ -510,7 +767,7 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
                           : 'bg-sky-900/60 text-sky-100 rounded-tr-xs border border-sky-700/50'
                       }`}
                     >
-                      {msg.content}
+                      {renderMessageContent(msg.content)}
                     </div>
                   </div>
                 );
@@ -529,7 +786,7 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
               placeholder={
                 selectedConversation.status === 'human_takeover'
                   ? 'Escribe tu respuesta al huésped en Telegram...'
-                  : 'Escribir respuesta (activará Control Humano automáticamente)...'
+                  : 'Escribir respuesta manual (activará Control Humano)...'
               }
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
@@ -554,8 +811,259 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
           <MessageSquare className="w-12 h-12 text-slate-700" />
           <h4 className="text-sm font-semibold text-slate-400">Selecciona una conversación</h4>
           <p className="text-xs text-slate-500 max-w-sm">
-            Elige un chat del panel izquierdo para leer mensajes, enviar respuestas directas o gestionar el control humano.
+            Elige un chat del panel izquierdo para leer mensajes, revisar comprobantes, confirmar señas y gestionar reservas.
           </p>
+        </div>
+      )}
+
+      {/* 3. Modal Lightbox de Comprobantes e Imágenes en Pantalla Completa */}
+      {previewImageUrl && (
+        <div
+          className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setPreviewImageUrl(null)}
+        >
+          <div
+            className="relative max-w-4xl max-h-[90vh] flex flex-col items-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setPreviewImageUrl(null)}
+              className="absolute -top-10 right-0 text-white hover:text-slate-300 flex items-center gap-1.5 text-xs font-semibold bg-slate-800/80 px-3 py-1 rounded-lg border border-slate-700"
+            >
+              <X className="w-4 h-4" /> Cerrar
+            </button>
+            <img
+              src={previewImageUrl}
+              alt="Detalle Comprobante de Pago"
+              className="max-w-full max-h-[80vh] rounded-2xl object-contain shadow-2xl border border-slate-700"
+            />
+            <div className="mt-3 flex items-center gap-3">
+              <a
+                href={previewImageUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-white border border-slate-600 flex items-center gap-1.5 font-medium transition-colors"
+              >
+                <ExternalLink className="w-3.5 h-3.5" /> Abrir imagen original
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 4. Modal de Creación Automática de Reserva desde Chat */}
+      {showConfirmModal && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowConfirmModal(false)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-xl p-6 shadow-2xl text-white space-y-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold">
+                  <CheckCircle2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-slate-100">
+                    Confirmar Seña y Crear Reserva Oficial
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Generará la reserva en el panel, bloqueará el calendario y enviará el Nº de Reserva al cliente.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowConfirmModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmAndCreateBooking} className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                    Titular de la Reserva *
+                  </label>
+                  <input
+                    type="text"
+                    value={bookingGuestName}
+                    onChange={(e) => setBookingGuestName(e.target.value)}
+                    required
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                    Teléfono Celular de Contacto *
+                  </label>
+                  <input
+                    type="text"
+                    value={bookingGuestPhone}
+                    onChange={(e) => setBookingGuestPhone(e.target.value)}
+                    placeholder="Ej: 11-4455-6677"
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                    Check-in *
+                  </label>
+                  <input
+                    type="date"
+                    value={bookingCheckIn}
+                    onChange={(e) => setBookingCheckIn(e.target.value)}
+                    required
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                    Check-out *
+                  </label>
+                  <input
+                    type="date"
+                    value={bookingCheckOut}
+                    onChange={(e) => setBookingCheckOut(e.target.value)}
+                    required
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                    Personas *
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="6"
+                    value={bookingGuestCount}
+                    onChange={(e) => setBookingGuestCount(Number(e.target.value))}
+                    required
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                  Cabaña Asignada (Cochera cubierta asociada) *
+                </label>
+                <select
+                  value={bookingCabinId}
+                  onChange={(e) => {
+                    const cId = e.target.value;
+                    setBookingCabinId(cId);
+                    const selCabin = cabins.find((c) => c.id === cId);
+                    if (selCabin) {
+                      const total = Number(selCabin.base_rate_usd) * 3;
+                      setBookingTotalUsd(total);
+                      setBookingSenaUsd(Math.round(total * 0.3));
+                    }
+                  }}
+                  required
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                >
+                  {cabins.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      Cabaña {c.cabin_number}: {c.name} ({c.floor}) — Base USD ${c.base_rate_usd}/noche
+                      {c.has_accessible_mobility ? ' [Accesible PB]' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                    Total Estadía (USD) *
+                  </label>
+                  <input
+                    type="number"
+                    value={bookingTotalUsd}
+                    onChange={(e) => {
+                      const tot = Number(e.target.value);
+                      setBookingTotalUsd(tot);
+                      setBookingSenaUsd(Math.round(tot * 0.3));
+                    }}
+                    required
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-emerald-400 mb-1">
+                    Seña Verificada (USD) *
+                  </label>
+                  <input
+                    type="number"
+                    value={bookingSenaUsd}
+                    onChange={(e) => setBookingSenaUsd(Number(e.target.value))}
+                    required
+                    className="w-full bg-slate-950 border border-emerald-500/40 rounded-xl px-3 py-2 text-xs text-emerald-300 font-bold focus:outline-none focus:border-emerald-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                    Patente (Opcional)
+                  </label>
+                  <input
+                    type="text"
+                    value={bookingLicensePlate}
+                    onChange={(e) => setBookingLicensePlate(e.target.value.toUpperCase())}
+                    placeholder="Ej: AB123CD"
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 font-mono focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 text-[11px] text-slate-400 space-y-1">
+                <p className="font-semibold text-slate-200">
+                  ℹ️ Acciones automáticas al confirmar:
+                </p>
+                <ul className="list-disc pl-4 space-y-0.5">
+                  <li>Se bloquea la cabaña y cochera en el calendario del complejo.</li>
+                  <li>Se registra el cobro de la seña en la caja del sistema.</li>
+                  <li>
+                    Se envía al cliente en Telegram el <b>Nº de Reserva</b> oficial y se le pide la patente y fotos del DNI.
+                  </li>
+                </ul>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmModal(false)}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-white transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={creatingBooking}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-950/40 transition-all disabled:opacity-50"
+                >
+                  {creatingBooking ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="w-4 h-4" />
+                  )}
+                  Confirmar Seña y Emitir Reserva Oficial
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>

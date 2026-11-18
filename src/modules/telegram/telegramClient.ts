@@ -189,4 +189,31 @@ export class TelegramClient {
       return false;
     }
   }
+
+  /**
+   * Obtiene la metadata del archivo en Telegram para su descarga
+   */
+  public async getFile(fileId: string): Promise<{ file_id: string; file_path?: string; file_size?: number } | null> {
+    try {
+      const res = await fetch(`${this.getBaseUrl()}/getFile?file_id=${encodeURIComponent(fileId)}`, {
+        signal: AbortSignal.timeout(10000),
+        headers: { 'User-Agent': 'CabanasAntoBot/1.0' },
+      });
+      const data = await res.json();
+      if (data.ok && data.result) {
+        return data.result;
+      }
+      return null;
+    } catch (err) {
+      console.error('Error en getFile:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Retorna la URL directa de descarga del archivo desde los servidores de Telegram
+   */
+  public getFileDownloadUrl(filePath: string): string {
+    return `https://api.telegram.org/file/bot${this.token}/${filePath}`;
+  }
 }
