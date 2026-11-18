@@ -175,8 +175,22 @@ export async function processTelegramUpdate(update: TelegramUpdate): Promise<{ s
     return { success: true };
   }
 
-  // 5. DETECCIÓN DE PALABRAS CLAVE PARA CONTROL HUMANO (Pregunta 5 acordada)
+  // 5. DETECCIÓN DE PALABRAS CLAVE PARA CONTROL HUMANO Y COMANDOS
   const lowerText = rawText.toLowerCase();
+
+  // Reactivar atención automática si el usuario envía /ia o /bot
+  if (!isOwner && (lowerText === '/ia' || lowerText === '/bot' || lowerText === '/asistente')) {
+    await supabase.from('conversations').update({ status: 'ai_active' }).eq('id', conversationId);
+    const reactivatedMsg = '¡Asistente virtual de Cabañas Anto reactivado! ¿En qué puedo ayudarte con tu estadía en Mar Azul?';
+    await supabase.from('messages').insert({
+      conversation_id: conversationId,
+      sender_type: 'assistant',
+      content: reactivatedMsg,
+    });
+    await telegram.sendMessage(chatId, reactivatedMsg);
+    return { success: true };
+  }
+
   const humanKeywords = ['humano', 'persona', 'recepción', 'recepcion', 'hablar con alguien', 'asesor', 'operador'];
   const wantsHuman = humanKeywords.some((kw) => lowerText.includes(kw));
 
@@ -330,8 +344,10 @@ export async function processTelegramUpdate(update: TelegramUpdate): Promise<{ s
 
     const currentBlue = rateData?.sell_rate || 1285;
 
-    contextData = `Fecha actual: ${new Date().toISOString().split('T')[0]} (Buenos Aires, Argentina)
-Cotización Dólar Blue actual: $${currentBlue} ARS por USD
+    contextData = `UBICACIÓN CONFIRMADA: Complejo de Cabañas Anto está ubicado en Mar Azul (Partido de Villa Gesell, Costa Atlántica, Provincia de Buenos Aires, Argentina), en medio del bosque de pinos y a 300 metros de la playa.
+¡REGLA ABSOLUTA DE UBICACIÓN: SI EL HUÉSPED PREGUNTA SI ESTAMOS EN MAR AZUL, RESPONDE SIEMPRE QUE SÍ, QUE ESTAMOS EN MAR AZUL!
+Fecha actual: ${new Date().toISOString().split('T')[0]} (Buenos Aires, Argentina)
+Cotización Dólar Blue actual de referencia: $${currentBlue} ARS por USD
 Cabañas disponibles en el predio (12 unidades):
 ${(cabinsData || [])
   .map(
@@ -339,22 +355,28 @@ ${(cabinsData || [])
       `- Cabaña ${c.cabin_number} ("${c.name}"): Planta ${c.floor}, Capacidad máx: ${c.max_guests} pax, Tarifa base: USD $${c.base_rate_usd}/noche (Aprox $${Math.round(c.base_rate_usd * currentBlue).toLocaleString('es-AR')} ARS). Adaptada movilidad: ${c.has_accessible_mobility ? 'SÍ' : 'No'}.`
   )
   .join('\n')}
-Política de Seña: 30% congelando el valor en USD. Check-in 14:00, Check-out 10:00. Incluye desayuno artesanal (opción Sin TACC) y cochera cubierta.`;
+Política de Seña: 30% congelando el valor en USD. Saldo restante (70%) se abona al check-in.
+Horarios: Check-in 14:00 hs, Check-out 10:00 hs.
+Servicios incluidos: Desayuno artesanal (con opción sin TACC previo aviso), cochera cubierta individual, ropa blanca, acceso a pileta y WiFi.
+Datos de cuenta para señas: Transferencia bancaria al Alias: CABANAS.ANTO.RESERVAS (Titular: Complejo Cabañas Anto).`;
   } catch (ctxErr) {
     console.warn('Error al armar contextData:', ctxErr);
   }
 
-  // 10. RECOPILAR HISTORIAL DE LA CONVERSACIÓN
-  const { data: recentMsgs } = await supabase
+  // 10. RECOPILAR HISTORIAL DE LA CONVERSACIÓN (Últimos 20 mensajes)
+  // El mensaje actual del usuario ya fue insertado en el paso 4, por lo que es el registro más reciente.
+  const { data: rawRecentMsgs } = await supabase
     .from('messages')
-    .select('sender_type, content')
+    .select('sender_type, content, created_at')
     .eq('conversation_id', conversationId)
-    .order('created_at', { ascending: true })
-    .limit(8);
+    .order('created_at', { ascending: false })
+    .limit(20);
 
-  const history = (recentMsgs || []).slice(0, -1).map((m) => ({
+  // Excluir el mensaje actual (índice 0) y revertir para orden cronológico
+  const priorMsgs = (rawRecentMsgs || []).slice(1).reverse();
+  const history = priorMsgs.map((m) => ({
     role: (m.sender_type === 'user' ? 'user' : 'model') as 'user' | 'model',
-    content: m.content,
+    content: m.content || '',
   }));
 
   // 11. GENERAR RESPUESTA CON GEMINI

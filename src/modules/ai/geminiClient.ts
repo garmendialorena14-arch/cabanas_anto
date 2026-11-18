@@ -79,27 +79,62 @@ export async function generateAssistantResponse({
 DATOS Y CONTEXTO EN TIEMPO REAL DEL COMPLEJO (ZONA HORARIA: America/Argentina/Buenos_Aires):
 ${contextData || 'No hay datos adicionales de contexto en este momento.'}
 ======================================================================
-Instrucciones operativas adicionales:
-- Responde siempre en español de manera cálida y concisa, ideal para mensajería instantánea de Telegram.
-- Si el usuario confirma fechas y desea reservar, resume los datos (cabaña sugerida, fechas, personas) e indícale los pasos para la seña.
-- Si el usuario dice "humano", "persona", "asesor" o similar, indícale cordialmente que pasas el chat a recepción.`;
+REGLAS CONVERSACIONALES CRÍTICAS:
+1. UBICACIÓN: Complejo de Cabañas Anto está ubicado en MAR AZUL, Provincia de Buenos Aires, Argentina (en el bosque de pinos, a 300 metros de la playa). NUNCA digas que no estás en Mar Azul.
+2. MEMORIA Y FLUJO DE RESERVAS (NO REPETIR PREGUNTAS):
+   - Revisa todo el historial antes de responder.
+   - Si el huésped ya mencionó las fechas y la cantidad de personas en turnos previos, NO se las vuelvas a pedir.
+   - Si el huésped ya recibió la cotización y dice "avancemos", "sí, por favor", "quiero reservar", "dale", "cómo sigo", etc.:
+     * NO repitas la cotización ni vuelvas a pedir fechas o cantidad de personas.
+     * Avanza de inmediato solicitando los datos del titular: 1) Nombre y Apellido completo, 2) Teléfono o WhatsApp de contacto, 3) DNI o Pasaporte.
+     * Facilita los datos bancarios para abonar la seña del 30%: Transferencia al Alias: CABANAS.ANTO.RESERVAS (Titular: Complejo Cabañas Anto).
+     * Recuerda al huésped enviar el comprobante de transferencia por este mismo chat de Telegram para que el equipo de recepción confirme y emita la orden de reserva oficial.
+3. SI EL USUARIO PIDE UN ASESOR O HUMANO: Comunica amablemente que transfieres la conversación a recepción humana.
+4. FORMATO: Breve, cálido, profesional, formateado para Telegram con negritas y viñetas claras.`;
 
-    // Convertir historial a formato compatible
-    const contents: any[] = [];
+    // Normalizar historial asegurando formato estricto de turnos para Gemini API:
+    // 1) El primer turno debe ser 'user'.
+    // 2) Los turnos deben alternar entre 'user' y 'model'.
+    const rawItems: Array<{ role: 'user' | 'model'; text: string }> = [];
 
-    // Agregar últimos mensajes de la conversación
     for (const msg of conversationHistory) {
-      contents.push({
-        role: msg.role === 'model' ? 'model' : 'user',
-        parts: [{ text: msg.content }],
+      if (msg.content && msg.content.trim()) {
+        rawItems.push({
+          role: msg.role === 'model' ? 'model' : 'user',
+          text: msg.content.trim(),
+        });
+      }
+    }
+
+    if (userMessage && userMessage.trim()) {
+      rawItems.push({
+        role: 'user',
+        text: userMessage.trim(),
       });
     }
 
-    // Agregar el mensaje actual del usuario
-    contents.push({
-      role: 'user',
-      parts: [{ text: userMessage }],
-    });
+    // Asegurar que el historial no arranque con 'model'
+    while (rawItems.length > 0 && rawItems[0].role === 'model') {
+      rawItems.shift();
+    }
+
+    if (rawItems.length === 0) {
+      rawItems.push({ role: 'user', text: userMessage.trim() || 'Hola' });
+    }
+
+    // Combinar mensajes consecutivos del mismo rol
+    const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
+    for (const item of rawItems) {
+      const last = contents[contents.length - 1];
+      if (last && last.role === item.role) {
+        last.parts[0].text += `\n\n${item.text}`;
+      } else {
+        contents.push({
+          role: item.role,
+          parts: [{ text: item.text }],
+        });
+      }
+    }
 
     // Modelos candidatos en orden de prioridad (soporta fallback automático si Google depreca alguno)
     const normalizedModel = (model || '').replace(/^models\//, '');
