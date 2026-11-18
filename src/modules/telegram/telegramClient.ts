@@ -75,7 +75,10 @@ export class TelegramClient {
    */
   public async getMe(): Promise<TelegramBotInfo | null> {
     try {
-      const res = await fetch(`${this.getBaseUrl()}/getMe`);
+      const res = await fetch(`${this.getBaseUrl()}/getMe`, {
+        signal: AbortSignal.timeout(10000),
+        headers: { 'User-Agent': 'CabanasAntoBot/1.0' },
+      });
       const data = await res.json();
       if (data.ok) {
         return data.result as TelegramBotInfo;
@@ -101,7 +104,8 @@ export class TelegramClient {
     try {
       const res = await fetch(`${this.getBaseUrl()}/sendMessage`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'CabanasAntoBot/1.0' },
+        signal: AbortSignal.timeout(10000),
         body: JSON.stringify({
           chat_id: chatId,
           text,
@@ -137,7 +141,8 @@ export class TelegramClient {
 
       const res = await fetch(`${this.getBaseUrl()}/setWebhook`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'CabanasAntoBot/1.0' },
+        signal: AbortSignal.timeout(10000),
         body: JSON.stringify(body),
       });
 
@@ -153,7 +158,10 @@ export class TelegramClient {
    */
   public async getWebhookInfo(): Promise<TelegramWebhookInfo | null> {
     try {
-      const res = await fetch(`${this.getBaseUrl()}/getWebhookInfo`);
+      const res = await fetch(`${this.getBaseUrl()}/getWebhookInfo`, {
+        signal: AbortSignal.timeout(10000),
+        headers: { 'User-Agent': 'CabanasAntoBot/1.0' },
+      });
       const data = await res.json();
       if (data.ok) {
         return data.result as TelegramWebhookInfo;
@@ -170,7 +178,10 @@ export class TelegramClient {
    */
   public async deleteWebhook(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.getBaseUrl()}/deleteWebhook`);
+      const res = await fetch(`${this.getBaseUrl()}/deleteWebhook`, {
+        signal: AbortSignal.timeout(10000),
+        headers: { 'User-Agent': 'CabanasAntoBot/1.0' },
+      });
       const data = await res.json();
       return !!data.ok;
     } catch (err) {

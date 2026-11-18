@@ -34,6 +34,12 @@ export default function TelegramBotConfigCard() {
     setStatusMessage(null);
     try {
       const res = await fetch('/api/telegram/config');
+      if (!res.ok) {
+        if (typeof window !== 'undefined') {
+          setWebhookUrl(`${window.location.origin}/api/telegram/webhook`);
+        }
+        return;
+      }
       const data = await res.json();
       if (data.connection) {
         setOwnerChatId(data.connection.owner_chat_id || '');
@@ -74,13 +80,23 @@ export default function TelegramBotConfigCard() {
         }),
       });
 
-      const data = await res.json();
+      let data: any = {};
+      try {
+        data = await res.json();
+      } catch {
+        throw new Error(
+          res.status === 504 || res.status === 502
+            ? 'Los servidores de Telegram demoraron en responder (Timeout). Por favor reintenta en un momento.'
+            : `El servidor devolvió un error (${res.status}). Por favor reintenta.`
+        );
+      }
+
       if (!res.ok || data.error) {
         setStatusMessage({ type: 'error', text: data.error || 'Error al guardar la configuración.' });
       } else {
         setStatusMessage({
           type: 'success',
-          text: `¡Bot @${data.bot.username} conectado exitosamente y Webhook registrado!`,
+          text: `¡Bot @${data.bot?.username || 'CabanasAnto_Bot'} conectado exitosamente y Webhook registrado!`,
         });
         setBotInfo(data.bot);
         setBotToken('');
