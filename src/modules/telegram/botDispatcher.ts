@@ -451,18 +451,40 @@ export async function processTelegramUpdate(update: TelegramUpdate): Promise<{ s
       .maybeSingle();
 
     const currentBlue = rateData?.sell_rate || 1285;
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    // Obtener reservas activas vigentes y futuras para control en vivo de disponibilidad
+    const { data: upcomingReservations } = await supabase
+      .from('reservations')
+      .select('cabin_id, check_in_date, check_out_date, status, cabins(cabin_number, name)')
+      .neq('status', 'cancelada')
+      .gte('check_out_date', todayStr)
+      .order('check_in_date')
+      .limit(40);
+
+    const occupiedCalendar = (upcomingReservations || [])
+      .map((r: any) => `- Cabaña ${r.cabins?.cabin_number || 'N/A'}: OCUPADA del ${r.check_in_date} al ${r.check_out_date}`)
+      .join('\n');
 
     contextData = `UBICACIÓN CONFIRMADA: Complejo de Cabañas Anto está ubicado en Mar Azul (Partido de Villa Gesell, Costa Atlántica, Provincia de Buenos Aires, Argentina), en medio del bosque de pinos y a 300 metros de la playa.
 ¡REGLA ABSOLUTA DE UBICACIÓN: SI EL HUÉSPED PREGUNTA SI ESTAMOS EN MAR AZUL, RESPONDE SIEMPRE QUE SÍ, QUE ESTAMOS EN MAR AZUL!
-Fecha actual: ${new Date().toISOString().split('T')[0]} (Buenos Aires, Argentina)
+Fecha actual: ${todayStr} (Buenos Aires, Argentina)
 Cotización Dólar Blue actual de referencia: $${currentBlue} ARS por USD
-Cabañas disponibles en el predio (12 unidades):
+Cabañas existentes en el predio (12 unidades):
 ${(cabinsData || [])
   .map(
     (c) =>
       `- Cabaña ${c.cabin_number} ("${c.name}"): Planta ${c.floor}, Capacidad máx: ${c.max_guests} pax, Tarifa base: USD $${c.base_rate_usd}/noche (Aprox $${Math.round(c.base_rate_usd * currentBlue).toLocaleString('es-AR')} ARS). Adaptada movilidad: ${c.has_accessible_mobility ? 'SÍ' : 'No'}.`
   )
   .join('\n')}
+
+CALENDARIO DE OCUPACIÓN EN VIVO (CABAÑAS NO DISPONIBLES EN ESTAS FECHAS):
+${occupiedCalendar || 'Todas las cabañas se encuentran desocupadas actualmente.'}
+
+REGLAS CRÍTICAS DE DISPONIBILIDAD PARA LA IA:
+1. NUNCA ofrezcas, prometas o asignes una cabaña en fechas que coincidan o se superpongan con el CALENDARIO DE OCUPACIÓN.
+2. Si el huésped consulta por fechas donde una cabaña ya está reservada, verifica qué otras cabañas con la capacidad requerida están DESOCUPADAS y ofrécele esas opciones alternativas.
+3. Si el huésped requiere movilidad reducida o planta baja, recuerda que ÚNICAMENTE las Cabañas 1, 2, 3 y 4 (PB) son accesibles y adaptadas. Si una está ocupada, verifica las demás de PB.
 Política de Seña: 30% congelando el valor en USD. Saldo restante (70%) se abona al check-in.
 Horarios: Check-in 14:00 hs, Check-out 10:00 hs.
 Servicios incluidos: Desayuno artesanal (con opción sin TACC previo aviso), cochera cubierta individual, ropa blanca, acceso a pileta y WiFi.

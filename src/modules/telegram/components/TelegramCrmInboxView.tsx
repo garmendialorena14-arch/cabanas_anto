@@ -71,6 +71,11 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
   const [bookingHasReducedMobility, setBookingHasReducedMobility] = useState(false);
   const [bookingMissingFields, setBookingMissingFields] = useState<string[]>([]);
   const [extractingData, setExtractingData] = useState(false);
+  const [checkingAvailability, setCheckingAvailability] = useState(false);
+  const [occupiedCabinIds, setOccupiedCabinIds] = useState<string[]>([]);
+  const [occupiedDetails, setOccupiedDetails] = useState<Record<string, any[]>>({});
+  const [hasAvailability, setHasAvailability] = useState(true);
+  const [availabilityReason, setAvailabilityReason] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -325,6 +330,53 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
     }
   }
 
+  // Dynamic availability checker whenever dates, guest count, or mobility change in the modal
+  useEffect(() => {
+    if (!showConfirmModal || !bookingCheckIn || !bookingCheckOut) return;
+
+    let isMounted = true;
+    const fetchAvail = async () => {
+      setCheckingAvailability(true);
+      try {
+        const res = await fetch(
+          `/api/cabins/availability?check_in=${bookingCheckIn}&check_out=${bookingCheckOut}&guest_count=${bookingGuestCount}&has_reduced_mobility=${bookingHasReducedMobility}&preferred_cabin_id=${bookingCabinId}`
+        );
+        const data = await res.json();
+        if (isMounted && data.ok) {
+          setOccupiedCabinIds(data.occupiedCabinIds || []);
+          setOccupiedDetails(data.occupiedDetails || {});
+          setHasAvailability(Boolean(data.hasAvailability));
+          setAvailabilityReason(data.reason || null);
+
+          // Si la cabaña seleccionada está ocupada o no es apta, seleccionar la mejor cabaña libre
+          if (data.bestCabin) {
+            if (!bookingCabinId || (data.occupiedCabinIds || []).includes(bookingCabinId)) {
+              setBookingCabinId(data.bestCabin.id);
+              const inD = new Date(bookingCheckIn);
+              const outD = new Date(bookingCheckOut);
+              const nights = Math.max(1, Math.round((outD.getTime() - inD.getTime()) / (1000 * 60 * 60 * 24)));
+              const total = Number(data.bestCabin.base_rate_usd) * nights;
+              setBookingTotalUsd(total);
+              setBookingSenaUsd(Math.round(total * 0.3));
+            }
+          } else if (!data.hasAvailability) {
+            setBookingCabinId('');
+          }
+        }
+      } catch (err) {
+        console.warn('Error verificando disponibilidad en vivo:', err);
+      } finally {
+        if (isMounted) setCheckingAvailability(false);
+      }
+    };
+
+    fetchAvail();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [showConfirmModal, bookingCheckIn, bookingCheckOut, bookingGuestCount, bookingHasReducedMobility]);
+
   // Abrir Modal de Confirmación y Extraer Datos de la Conversación con IA
   async function handleOpenBookingModal() {
     if (!selectedConversation) return;
@@ -343,6 +395,10 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
     setBookingHasSinTacc(false);
     setBookingHasReducedMobility(false);
     setBookingMissingFields([]);
+    setOccupiedCabinIds([]);
+    setOccupiedDetails({});
+    setHasAvailability(true);
+    setAvailabilityReason(null);
 
     const now = new Date();
     const defaultIn = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -389,6 +445,13 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
         if (ext.has_celiac_sin_tacc !== undefined) setBookingHasSinTacc(ext.has_celiac_sin_tacc);
         if (ext.has_reduced_mobility !== undefined) setBookingHasReducedMobility(ext.has_reduced_mobility);
         if (ext.missing_fields) setBookingMissingFields(ext.missing_fields);
+
+        if (data.availability) {
+          setOccupiedCabinIds(data.availability.occupiedCabinIds || []);
+          setOccupiedDetails(data.availability.occupiedDetails || {});
+          setHasAvailability(Boolean(data.availability.hasAvailability));
+          setAvailabilityReason(data.availability.reason || null);
+        }
       }
     } catch (err) {
       console.warn('Error al extraer datos con IA:', err);
@@ -402,6 +465,13 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
     e.preventDefault();
     if (!selectedConversation || !bookingCabinId) return;
 
+    if (occupiedCabinIds.includes(bookingCabinId)) {
+      const occ = occupiedDetails[bookingCabinId]?.[0];
+      const who = occ ? `"${occ.guest_name}" (${occ.check_in_date} al ${occ.check_out_date})` : 'otra reserva activa';
+      alert(`⚠️ Conflicto de Superposición: Esta cabaña ya está ocupada por ${who}. Por favor selecciona una cabaña libre.`);
+      return;
+    }
+
     setCreatingBooking(true);
     try {
       const res = await fetch('/api/telegram/bookings', {
@@ -413,13 +483,13 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
           cabin_id: bookingCabinId,
           check_in_date: bookingCheckIn,
           check_out_date: bookingCheckOut,
-          guest_name: bookingGuestName,
-          guest_phone: bookingGuestPhone,
-          guest_dni: bookingGuestDni,
+          guest_name: (bookingGuestName || '').trim() || 'Huésped Telegram',
+          guest_phone: (bookingGuestPhone || '').trim() || 'N/A',
+          guest_dni: (bookingGuestDni || '').trim() || 'N/A',
           guest_count: bookingGuestCount,
           total_usd: bookingTotalUsd,
           sena_usd: bookingSenaUsd,
-          vehicle_license_plate: bookingLicensePlate || null,
+          vehicle_license_plate: bookingLicensePlate ? bookingLicensePlate.trim().toUpperCase() : null,
           has_celiac_sin_tacc: bookingHasSinTacc,
           has_reduced_mobility: bookingHasReducedMobility,
         }),
@@ -463,6 +533,11 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
 
       const data = await res.json();
       if (!res.ok || data.error) {
+        if (data.conflict) {
+          alert(`⚠️ No se pudo asignar automáticamente: ${data.error}\n\nSe abrirá la ventana para que puedas revisar las fechas y elegir una cabaña libre.`);
+          handleOpenBookingModal();
+          return;
+        }
         throw new Error(data.error || 'No se pudo crear la reserva automática.');
       }
 
@@ -1274,11 +1349,31 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
                 </div>
               </div>
 
-              {/* Fila 3: Cabaña asignada */}
+              {/* Fila 3: Cabaña asignada y Verificación de Disponibilidad en Vivo */}
               <div>
-                <label className="block text-[11px] font-semibold text-slate-400 mb-1">
-                  Cabaña Asignada (Cochera cubierta asociada) *
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-400">
+                    Cabaña Asignada (Cochera cubierta asociada) *
+                  </label>
+                  {checkingAvailability && (
+                    <span className="text-[10px] text-sky-400 flex items-center gap-1 font-medium">
+                      <RefreshCw className="w-3 h-3 animate-spin" /> Verificando disponibilidad...
+                    </span>
+                  )}
+                </div>
+
+                {!hasAvailability && (
+                  <div className="mb-2 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold">Sin disponibilidad para estas fechas</p>
+                      <p className="text-[11px] text-rose-200/90 mt-0.5">
+                        {availabilityReason || 'No hay cabañas desocupadas con los requisitos solicitados para este período.'}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
                 <select
                   value={bookingCabinId}
                   onChange={(e) => {
@@ -1295,15 +1390,49 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
                     }
                   }}
                   required
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                  className={`w-full bg-slate-950 border rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none ${
+                    occupiedCabinIds.includes(bookingCabinId)
+                      ? 'border-rose-500 text-rose-200'
+                      : 'border-slate-700 focus:border-emerald-500'
+                  }`}
                 >
-                  {cabins.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      Cabaña {c.cabin_number}: {c.name} ({c.floor}) — Base USD ${c.base_rate_usd}/noche
-                      {c.has_accessible_mobility ? ' [Accesible PB]' : ''}
-                    </option>
-                  ))}
+                  <option value="" disabled>-- Selecciona una cabaña disponible --</option>
+                  {cabins.map((c) => {
+                    const isOccupied = occupiedCabinIds.includes(c.id);
+                    const occInfo = occupiedDetails[c.id]?.[0];
+                    const isMobilityMismatched = bookingHasReducedMobility && !c.has_accessible_mobility;
+                    const isCapacityTooSmall = c.max_guests < bookingGuestCount;
+
+                    let statusBadge = '';
+                    if (isOccupied) {
+                      statusBadge = ` 🚫 [OCUPADA: ${occInfo?.guest_name || 'Reservada'} (${occInfo?.check_in_date || ''} al ${occInfo?.check_out_date || ''})]`;
+                    } else if (isMobilityMismatched) {
+                      statusBadge = ` ⚠️ [No accesible - Planta Alta]`;
+                    } else if (isCapacityTooSmall) {
+                      statusBadge = ` ⚠️ [Capacidad máx ${c.max_guests} pax]`;
+                    } else {
+                      statusBadge = ` ✓ [LIBRE]`;
+                    }
+
+                    return (
+                      <option
+                        key={c.id}
+                        value={c.id}
+                        disabled={isOccupied || (bookingHasReducedMobility && isMobilityMismatched)}
+                        className={isOccupied ? 'text-rose-400 bg-slate-900 font-medium' : 'text-slate-100'}
+                      >
+                        Cabaña {c.cabin_number}: {c.name} ({c.floor}) — Base USD ${c.base_rate_usd}/noche{statusBadge}
+                      </option>
+                    );
+                  })}
                 </select>
+
+                {occupiedCabinIds.includes(bookingCabinId) && (
+                  <p className="text-[11px] text-rose-400 mt-1 flex items-center gap-1 font-medium">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    Esta cabaña está ocupada para esas fechas. Por favor elige una de las opciones con marca ✓ [LIBRE].
+                  </p>
+                )}
               </div>
 
               {/* Fila 4: Total USD, Seña USD y Patente */}
@@ -1399,8 +1528,15 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
                 </button>
                 <button
                   type="submit"
-                  disabled={creatingBooking || extractingData}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-950/40 transition-all disabled:opacity-50"
+                  disabled={
+                    creatingBooking ||
+                    extractingData ||
+                    checkingAvailability ||
+                    !bookingCabinId ||
+                    !hasAvailability ||
+                    occupiedCabinIds.includes(bookingCabinId)
+                  }
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-950/40 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {creatingBooking ? (
                     <RefreshCw className="w-4 h-4 animate-spin" />

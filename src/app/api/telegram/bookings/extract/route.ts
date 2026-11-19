@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAuthRoles } from '@/shared/lib/supabase/authServerHelper';
 import { GoogleGenAI } from '@google/genai';
 import { getGeminiApiKey } from '@/modules/ai/geminiClient';
+import { checkCabinAvailability } from '@/shared/lib/availability';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,7 +33,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Conversación no encontrada' }, { status: 404 });
     }
 
-    // 2. Obtener lista de cabañas disponibles y cotización del Dólar Blue
+    // 2. Obtener lista de cabañas del predio y cotización del Dólar Blue
     const { data: cabins } = await supabase
       .from('cabins')
       .select('id, cabin_number, name, floor, max_guests, has_accessible_mobility, base_rate_usd')
@@ -66,7 +67,7 @@ export async function GET(req: NextRequest) {
     const defaultCheckIn = new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const defaultCheckOut = new Date(today.getTime() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-    const extracted = {
+    const extracted: any = {
       guest_name: conv.contacts?.full_name && !conv.contacts.full_name.startsWith('Huésped ') ? conv.contacts.full_name : '',
       guest_phone: conv.contacts?.phone || '',
       guest_dni: '',
@@ -75,16 +76,20 @@ export async function GET(req: NextRequest) {
       guest_count: 2,
       adults_count: 2,
       children_count: 0,
-      cabin_id: cabins && cabins.length > 0 ? cabins[0].id : '',
-      cabin_number: cabins && cabins.length > 0 ? cabins[0].cabin_number : 1,
+      cabin_id: '',
+      cabin_number: 1,
       total_usd: 0,
       sena_usd: 0,
       vehicle_license_plate: '',
       has_celiac_sin_tacc: false,
       has_reduced_mobility: false,
+      no_availability: false,
+      unavailable_reason: '',
       missing_fields: [] as string[],
       notes: '',
     };
+
+    let requestedCabinNumber: number | null = null;
 
     const apiKey = getGeminiApiKey();
     if (apiKey && transcript.trim().length > 0) {
@@ -107,7 +112,7 @@ Campos a extraer del chat (si no se menciona o no está seguro, devolver null o 
 6. guest_count: Número total entero de personas (ej: 4).
 7. adults_count: Cantidad de adultos enteros (ej: 2).
 8. children_count: Cantidad de niños enteros (ej: 2).
-9. cabin_number: Número de cabaña (1 a 12) más adecuada según la cantidad de personas y si requiere movilidad reducida.
+9. cabin_number: Número de cabaña mencionada o solicitada (1 a 12), si la hubo.
 10. total_usd: Monto total cotizado o acordado en USD (ej: 300).
 11. sena_usd: Monto de la seña en USD (ej: 90, habitualmente el 30% del total).
 12. vehicle_license_plate: Patente o dominio del vehículo para la cochera cubierta (ej: "AB 123 CD" o "ABC 123").
@@ -173,41 +178,51 @@ Responde ÚNICAMENTE con el objeto JSON válido sin bloques markdown ni explicac
         if (parsed.notes) {
           extracted.notes = parsed.notes.trim();
         }
-
-        // Emparejar Cabaña adecuada
         if (parsed.cabin_number) {
-          const matched = (cabins || []).find((c: any) => c.cabin_number === Number(parsed.cabin_number));
-          if (matched) {
-            extracted.cabin_id = matched.id;
-            extracted.cabin_number = matched.cabin_number;
-          }
-        } else if (cabins && cabins.length > 0) {
-          const suitable = cabins.find(
-            (c: any) =>
-              c.max_guests >= extracted.guest_count &&
-              (!extracted.has_reduced_mobility || c.has_accessible_mobility)
-          ) || cabins[0];
-          extracted.cabin_id = suitable.id;
-          extracted.cabin_number = suitable.cabin_number;
-        }
-
-        // Si total_usd sigue en 0, calcular noches y tarifa base
-        if (extracted.total_usd === 0 && extracted.cabin_id) {
-          const targetCabin = cabins?.find((c: any) => c.id === extracted.cabin_id);
-          if (targetCabin) {
-            const inD = new Date(extracted.check_in_date);
-            const outD = new Date(extracted.check_out_date);
-            const nights = Math.max(1, Math.round((outD.getTime() - inD.getTime()) / (1000 * 60 * 60 * 24)));
-            extracted.total_usd = Number(targetCabin.base_rate_usd) * nights;
-            extracted.sena_usd = Math.round(extracted.total_usd * 0.3);
-          }
+          requestedCabinNumber = Number(parsed.cabin_number);
         }
       } catch (aiErr) {
         console.warn('Error extrayendo con Gemini:', aiErr);
       }
     }
 
-    // 4. Calcular lista de campos obligatorios faltantes
+    // 4. VERIFICACIÓN RIGUROSA DE DISPONIBILIDAD REAL EN LA BASE DE DATOS
+    // Se excluyen cabañas ocupadas en ese rango y se verifica accesibilidad PB y capacidad
+    const preferredCabin = requestedCabinNumber
+      ? (cabins || []).find((c: any) => c.cabin_number === requestedCabinNumber)
+      : null;
+
+    const availability = await checkCabinAvailability(supabase, {
+      checkInDate: extracted.check_in_date,
+      checkOutDate: extracted.check_out_date,
+      guestCount: extracted.guest_count,
+      hasReducedMobility: extracted.has_reduced_mobility,
+      preferredCabinId: preferredCabin?.id,
+    });
+
+    if (availability.hasAvailability && availability.bestCabin) {
+      extracted.cabin_id = availability.bestCabin.id;
+      extracted.cabin_number = availability.bestCabin.cabin_number;
+    } else {
+      extracted.cabin_id = '';
+      extracted.cabin_number = null;
+      extracted.no_availability = true;
+      extracted.unavailable_reason = availability.reason || 'Sin disponibilidad para esas fechas.';
+    }
+
+    // Si total_usd sigue en 0, calcular noches y tarifa base de la cabaña seleccionada
+    if (extracted.total_usd === 0 && extracted.cabin_id) {
+      const targetCabin = cabins?.find((c: any) => c.id === extracted.cabin_id);
+      if (targetCabin) {
+        const inD = new Date(extracted.check_in_date);
+        const outD = new Date(extracted.check_out_date);
+        const nights = Math.max(1, Math.round((outD.getTime() - inD.getTime()) / (1000 * 60 * 60 * 24)));
+        extracted.total_usd = Number(targetCabin.base_rate_usd) * nights;
+        extracted.sena_usd = Math.round(extracted.total_usd * 0.3);
+      }
+    }
+
+    // 5. Calcular lista de campos obligatorios faltantes
     const missing: string[] = [];
     if (!extracted.guest_name || extracted.guest_name.toLowerCase().includes('huésped')) {
       missing.push('Nombre y Apellido');
@@ -221,12 +236,23 @@ Responde ÚNICAMENTE con el objeto JSON válido sin bloques markdown ni explicac
     if (!extracted.vehicle_license_plate) {
       missing.push('Patente del Vehículo');
     }
+    if (extracted.no_availability) {
+      missing.push(`⚠️ ALERTA DE DISPONIBILIDAD: ${extracted.unavailable_reason}`);
+    }
     extracted.missing_fields = missing;
 
     return NextResponse.json({
       ok: true,
       extracted,
       blueRate,
+      availability: {
+        hasAvailability: availability.hasAvailability,
+        reason: availability.reason,
+        occupiedCabinIds: availability.occupiedCabinIds,
+        occupiedDetails: availability.occupiedDetails,
+        freeCabins: availability.freeCabins,
+        suitableCabins: availability.suitableCabins,
+      },
     });
   } catch (err: any) {
     console.error('Error en /api/telegram/bookings/extract:', err);

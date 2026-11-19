@@ -8,6 +8,7 @@ import { requireAuthRoles } from '@/shared/lib/supabase/authServerHelper';
 import { TelegramClient } from '@/modules/telegram/telegramClient';
 import { GoogleGenAI } from '@google/genai';
 import { getGeminiApiKey } from '@/modules/ai/geminiClient';
+import { checkCabinAvailability } from '@/shared/lib/availability';
 
 export const dynamic = 'force-dynamic';
 
@@ -85,6 +86,8 @@ export async function POST(req: NextRequest) {
     // ==================================================================
     // MODO AUTOMÁTICO VÍA IA: Extraer datos directamente de la conversación
     // ==================================================================
+    let preferredCabinNumber: number | null = null;
+
     if (auto_create && conversation_id) {
       const { data: conv } = await supabase
         .from('conversations')
@@ -122,7 +125,7 @@ Campos a extraer:
 - guest_count (número de personas entero, ej 4)
 - total_usd (número del total en USD acordado o cotizado, ej 300)
 - sena_usd (número de la seña en USD, ej 90)
-- cabin_number (número de cabaña 1 a 12 adecuada para esa cantidad de personas, ej 1)
+- cabin_number (número de cabaña solicitada o mencionada si la hubo)
 - guest_name (nombre completo del titular si está disponible)
 - guest_phone (teléfono si fue mencionado)
 - guest_dni (DNI o Pasaporte si fue mencionado)
@@ -155,35 +158,11 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
           if (parsed.vehicle_license_plate && !vehicle_license_plate) vehicle_license_plate = parsed.vehicle_license_plate;
           if (parsed.has_celiac_sin_tacc !== undefined && has_celiac_sin_tacc === undefined) has_celiac_sin_tacc = parsed.has_celiac_sin_tacc;
           if (parsed.has_reduced_mobility !== undefined && has_reduced_mobility === undefined) has_reduced_mobility = parsed.has_reduced_mobility;
-
-          // Asignar cabaña según número sugerido
-          if (parsed.cabin_number) {
-            const { data: matchedCabin } = await supabase
-              .from('cabins')
-              .select('id')
-              .eq('cabin_number', Number(parsed.cabin_number))
-              .maybeSingle();
-
-            if (matchedCabin) cabin_id = matchedCabin.id;
-          }
+          if (parsed.cabin_number) preferredCabinNumber = Number(parsed.cabin_number);
         } catch (aiErr) {
           console.warn('Extracción con IA falló, usando datos por defecto:', aiErr);
         }
       }
-    }
-
-    // Fallbacks si falta algún campo
-    if (!cabin_id) {
-      const targetPax = Number(guest_count) || 4;
-      const { data: fallbackCabin } = await supabase
-        .from('cabins')
-        .select('id')
-        .gte('max_guests', targetPax)
-        .order('cabin_number')
-        .limit(1)
-        .single();
-
-      cabin_id = fallbackCabin?.id;
     }
 
     if (!check_in_date) {
@@ -195,40 +174,9 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
       check_out_date = new Date(inDate.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     }
 
-    // 1. Obtener Cabaña
-    const { data: cabin, error: cabinErr } = await supabase
-      .from('cabins')
-      .select('*')
-      .eq('id', cabin_id)
-      .single();
-
-    if (cabinErr || !cabin) {
-      return NextResponse.json({ error: 'Cabaña no encontrada.' }, { status: 404 });
-    }
-
-    // 2. Obtener cotización Dólar Blue
-    const { data: rateData } = await supabase
-      .from('exchange_rates')
-      .select('sell_rate')
-      .order('recorded_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    const blueRate = rateData?.sell_rate || 1285;
-
-    // 3. Cálculos bimonetarios y noches
-    const inDate = new Date(check_in_date);
-    const outDate = new Date(check_out_date);
-    const diffTime = Math.abs(outDate.getTime() - inDate.getTime());
-    const totalNights = Math.max(1, Math.round(diffTime / (1000 * 60 * 60 * 24)));
-
-    const numTotalUsd = Number(total_usd) || Number(cabin.base_rate_usd) * totalNights;
-    const numSenaUsd = Number(sena_usd) || Math.round(numTotalUsd * 0.3);
-    const senaPaidArs = Math.round(numSenaUsd * blueRate);
-    const totalArsBooking = Math.round(numTotalUsd * blueRate);
-    const balancePendingUsd = Math.max(0, numTotalUsd - numSenaUsd);
-
-    // 3b. PREVENCIÓN DE DUPLICADOS: Verificar si ya existe una reserva activa para este contacto
+    // ==================================================================
+    // PREVENCIÓN DE DUPLICADOS: Verificar si ya existe una reserva activa para este contacto
+    // ==================================================================
     if (contact_id) {
       const { data: existingActive } = await supabase
         .from('reservations')
@@ -261,7 +209,137 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
       }
     }
 
-    // 4. Crear Reserva en la tabla reservations
+    // ==================================================================
+    // MOTOR DE DISPONIBILIDAD: CONTROL RIGUROSO CONTRA SUPERPOSICIONES
+    // ==================================================================
+    let preferredId = cabin_id;
+    if (!preferredId && preferredCabinNumber) {
+      const { data: pCab } = await supabase
+        .from('cabins')
+        .select('id')
+        .eq('cabin_number', preferredCabinNumber)
+        .maybeSingle();
+      if (pCab) preferredId = pCab.id;
+    }
+
+    const availability = await checkCabinAvailability(supabase, {
+      checkInDate: check_in_date,
+      checkOutDate: check_out_date,
+      guestCount: Number(guest_count) || 2,
+      hasReducedMobility: Boolean(has_reduced_mobility),
+      preferredCabinId: preferredId,
+    });
+
+    let cabin: any = null;
+
+    if (auto_create) {
+      // En modo automático vía IA: la IA DEBE asignar obligatoriamente una cabaña desocupada y apta
+      if (!availability.hasAvailability || !availability.bestCabin) {
+        return NextResponse.json(
+          {
+            error: availability.reason || `No hay cabañas disponibles para las fechas del ${check_in_date} al ${check_out_date} con los requisitos solicitados.`,
+            conflict: true,
+            hasAvailability: false,
+          },
+          { status: 409 }
+        );
+      }
+      cabin = availability.bestCabin;
+    } else {
+      // En modo manual con formulario:
+      if (!cabin_id) {
+        if (!availability.hasAvailability || !availability.bestCabin) {
+          return NextResponse.json(
+            { error: availability.reason || 'No hay cabañas disponibles para las fechas seleccionadas.' },
+            { status: 409 }
+          );
+        }
+        cabin = availability.bestCabin;
+      } else {
+        // Verificar si la cabaña elegida por el usuario tiene conflicto de superposición
+        if (availability.occupiedCabinIds.includes(cabin_id)) {
+          const occDetails = availability.occupiedDetails[cabin_id] || [];
+          const occStr = occDetails
+            .map((o) => `"${o.guest_name}" (${o.check_in_date} al ${o.check_out_date})`)
+            .join(', ');
+
+          const { data: targetCab } = await supabase
+            .from('cabins')
+            .select('cabin_number, name')
+            .eq('id', cabin_id)
+            .maybeSingle();
+
+          const cabName = targetCab ? `Cabaña ${targetCab.cabin_number} (${targetCab.name})` : 'La cabaña seleccionada';
+          const altCabins = availability.suitableCabins.map((c: any) => `Cabaña ${c.cabin_number}`).join(', ');
+
+          return NextResponse.json(
+            {
+              error: `¡SUPERPOSICIÓN DETECTADA! ${cabName} ya se encuentra ocupada para las fechas del ${check_in_date} al ${check_out_date} por la reserva de: ${occStr}.${altCabins ? ` Cabañas disponibles sugeridas: ${altCabins}.` : ''}`,
+              conflict: true,
+              occupiedCabinIds: availability.occupiedCabinIds,
+            },
+            { status: 409 }
+          );
+        }
+
+        // Obtener datos de la cabaña seleccionada
+        const { data: userCabin, error: cErr } = await supabase
+          .from('cabins')
+          .select('*')
+          .eq('id', cabin_id)
+          .single();
+
+        if (cErr || !userCabin) {
+          return NextResponse.json({ error: 'Cabaña no encontrada.' }, { status: 404 });
+        }
+
+        // Validar requerimiento de movilidad reducida
+        if (has_reduced_mobility && !userCabin.has_accessible_mobility) {
+          return NextResponse.json(
+            {
+              error: `El huésped requiere movilidad reducida / accesibilidad en Planta Baja, pero la Cabaña ${userCabin.cabin_number} está en Planta Alta y no cuenta con rampas. Por favor elija una cabaña en Planta Baja (Cabañas 1 a 4).`,
+            },
+            { status: 400 }
+          );
+        }
+
+        // Validar capacidad
+        if (userCabin.max_guests < (Number(guest_count) || 1)) {
+          return NextResponse.json(
+            {
+              error: `La Cabaña ${userCabin.cabin_number} tiene capacidad máxima para ${userCabin.max_guests} personas, pero la reserva es para ${guest_count} huéspedes.`,
+            },
+            { status: 400 }
+          );
+        }
+
+        cabin = userCabin;
+      }
+    }
+
+    // Cotización Dólar Blue
+    const { data: rateData } = await supabase
+      .from('exchange_rates')
+      .select('sell_rate')
+      .order('recorded_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const blueRate = rateData?.sell_rate || 1285;
+
+    // Cálculos bimonetarios y noches
+    const inDate = new Date(check_in_date);
+    const outDate = new Date(check_out_date);
+    const diffTime = Math.abs(outDate.getTime() - inDate.getTime());
+    const totalNights = Math.max(1, Math.round(diffTime / (1000 * 60 * 60 * 24)));
+
+    const numTotalUsd = Number(total_usd) || Number(cabin.base_rate_usd) * totalNights;
+    const numSenaUsd = Number(sena_usd) || Math.round(numTotalUsd * 0.3);
+    const senaPaidArs = Math.round(numSenaUsd * blueRate);
+    const totalArsBooking = Math.round(numTotalUsd * blueRate);
+    const balancePendingUsd = Math.max(0, numTotalUsd - numSenaUsd);
+
+    // Crear Reserva en la tabla reservations
     const finalGuestName = (guest_name || '').trim() || 'Huésped Telegram';
     const finalGuestPhone = (guest_phone || '').trim() || 'N/A';
     const finalGuestDni = (guest_dni || '').trim() || 'N/A';
@@ -310,7 +388,7 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
 
     const reservationCode = 'ANTO-' + newReservation.id.slice(0, 8).toUpperCase();
 
-    // 4b. Registrar también en la tabla bookings para sincronización integral
+    // Registrar en bookings para sincronización integral
     try {
       await supabase.from('bookings').insert({
         contact_id: contact_id || null,
@@ -329,7 +407,7 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
       console.warn('Registro secundario en bookings omitido:', bkErr);
     }
 
-    // 5. Registrar el cobro de la seña en la caja (payments)
+    // Registrar el cobro de la seña en la caja (payments)
     try {
       await supabase.from('payments').insert({
         reservation_id: newReservation.id,
@@ -345,7 +423,7 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
       console.warn('Error registrando pago en payments:', payErr);
     }
 
-    // 6. Actualizar datos en el contacto (teléfono y nombre)
+    // Actualizar datos en el contacto (teléfono y nombre)
     if (contact_id) {
       const contactUpdates: Record<string, any> = { updated_at: new Date().toISOString() };
       if (finalGuestPhone !== 'N/A') contactUpdates.phone = finalGuestPhone;
@@ -353,7 +431,7 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
       await supabase.from('contacts').update(contactUpdates).eq('id', contact_id);
     }
 
-    // 7. Notificar al huésped por Telegram con su Número Oficial de Reserva
+    // Notificar al huésped por Telegram con su Número Oficial de Reserva
     let telegramSent = false;
     if (contact_id) {
       const { data: contact } = await supabase
@@ -413,6 +491,12 @@ ${!finalPlate ? '1. Si aún no lo hiciste, por favor indícanos la <b>patente (d
       reservation: newReservation,
       reservationCode,
       telegramSent,
+      assignedCabin: {
+        id: cabin.id,
+        number: cabin.cabin_number,
+        name: cabin.name,
+        floor: cabin.floor,
+      },
     });
   } catch (err: any) {
     console.error('Error en POST /api/telegram/bookings:', err);
