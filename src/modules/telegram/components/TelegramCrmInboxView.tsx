@@ -132,9 +132,14 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
         .order('last_message_at', { ascending: false });
 
       if (data) {
-        setConversations(data as any);
-        if (!selectedConvId && data.length > 0) {
-          setSelectedConvId(data[0].id);
+        const normalized = data.map((item: any) => ({
+          ...item,
+          contact: item.contacts || item.contact,
+          assistant: item.assistants || item.assistant,
+        }));
+        setConversations(normalized);
+        if (!selectedConvId && normalized.length > 0) {
+          setSelectedConvId(normalized[0].id);
         }
       }
     } catch (err) {
