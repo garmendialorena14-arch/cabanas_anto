@@ -175,9 +175,9 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
     }
 
     // ==================================================================
-    // PREVENCIÓN DE DUPLICADOS: Verificar si ya existe una reserva activa para este contacto
+    // PREVENCIÓN DE DUPLICADOS: Solo si auto_create es true y es exactamente el mismo huésped y fechas
     // ==================================================================
-    if (contact_id) {
+    if (contact_id && auto_create) {
       const { data: existingActive } = await supabase
         .from('reservations')
         .select('*, cabins(*)')
@@ -188,24 +188,34 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
         .maybeSingle();
 
       if (existingActive) {
-        // La reserva ya existe: Actualizar datos (DNI, patente, notas) en lugar de duplicar
-        const updates: Record<string, any> = { updated_at: new Date().toISOString() };
-        if (guest_dni && guest_dni !== 'N/A') updates.guest_dni = guest_dni.trim();
-        if (vehicle_license_plate) updates.vehicle_license_plate = vehicle_license_plate.trim().toUpperCase();
-        if (has_celiac_sin_tacc !== undefined) updates.has_celiac_sin_tacc = Boolean(has_celiac_sin_tacc);
-        if (has_reduced_mobility !== undefined) updates.has_reduced_mobility = Boolean(has_reduced_mobility);
-        if (guest_phone && guest_phone !== 'N/A') updates.guest_phone = guest_phone.trim();
+        // Verificar si es el mismo huésped y fechas (evita bloquear reservas de familiares/amigos como Hugo Garmendia)
+        const isSameGuest = !guest_name ||
+          guest_name.toLowerCase().includes('huésped') ||
+          existingActive.guest_name.toLowerCase().includes(guest_name.toLowerCase().trim()) ||
+          guest_name.toLowerCase().trim().includes(existingActive.guest_name.toLowerCase());
 
-        await supabase.from('reservations').update(updates).eq('id', existingActive.id);
+        const isSameDate = !check_in_date || check_in_date === existingActive.check_in_date;
 
-        const existingCode = 'ANTO-' + existingActive.id.slice(0, 8).toUpperCase();
-        return NextResponse.json({
-          ok: true,
-          alreadyExists: true,
-          reservation: existingActive,
-          reservationCode: existingCode,
-          message: `La reserva #${existingCode} ya se encuentra activa para este huésped. Datos actualizados correctamente sin duplicar.`,
-        });
+        if (isSameGuest && isSameDate) {
+          // La reserva ya existe para el MISMO huésped y fecha: Actualizar datos (DNI, patente, notas) en lugar de duplicar
+          const updates: Record<string, any> = { updated_at: new Date().toISOString() };
+          if (guest_dni && guest_dni !== 'N/A') updates.guest_dni = guest_dni.trim();
+          if (vehicle_license_plate) updates.vehicle_license_plate = vehicle_license_plate.trim().toUpperCase();
+          if (has_celiac_sin_tacc !== undefined) updates.has_celiac_sin_tacc = Boolean(has_celiac_sin_tacc);
+          if (has_reduced_mobility !== undefined) updates.has_reduced_mobility = Boolean(has_reduced_mobility);
+          if (guest_phone && guest_phone !== 'N/A') updates.guest_phone = guest_phone.trim();
+
+          await supabase.from('reservations').update(updates).eq('id', existingActive.id);
+
+          const existingCode = 'ANTO-' + existingActive.id.slice(0, 8).toUpperCase();
+          return NextResponse.json({
+            ok: true,
+            alreadyExists: true,
+            reservation: existingActive,
+            reservationCode: existingCode,
+            message: `La reserva #${existingCode} ya se encuentra activa para este huésped (${existingActive.guest_name}). Datos actualizados correctamente sin duplicar.`,
+          });
+        }
       }
     }
 
@@ -303,8 +313,11 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
           );
         }
 
-        // Validar capacidad
-        if (userCabin.max_guests < (Number(guest_count) || 1)) {
+        // Validar capacidad (permitiendo 5 pax en cabañas PB adaptadas si hay movilidad reducida con cama extra/practicuna)
+        const paxNumber = Number(guest_count) || 1;
+        const isAdaptedPbFivePax = userCabin.has_accessible_mobility && paxNumber === 5 && Boolean(has_reduced_mobility);
+
+        if (userCabin.max_guests < paxNumber && !isAdaptedPbFivePax) {
           return NextResponse.json(
             {
               error: `La Cabaña ${userCabin.cabin_number} tiene capacidad máxima para ${userCabin.max_guests} personas, pero la reserva es para ${guest_count} huéspedes.`,

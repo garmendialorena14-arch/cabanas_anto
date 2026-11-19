@@ -152,15 +152,8 @@ REGLAS CONVERSACIONALES CRÍTICAS:
       }
     }
 
-    // Modelos candidatos en orden de prioridad (soporta fallback automático si Google depreca alguno)
-    const normalizedModel = (model || '').replace(/^models\//, '');
-    const modelCandidates = Array.from(
-      new Set([
-        normalizedModel === 'gemini-2.5-flash' ? 'gemini-3.1-flash-lite' : normalizedModel,
-        'gemini-3.1-flash-lite',
-        'gemini-3.8-flash',
-      ])
-    ).filter(Boolean);
+    // Modelos activos y rápidos con fallback automático
+    const modelCandidates = ['gemini-3.1-flash-lite', 'gemini-3.8-flash'];
 
     let lastError: any = null;
     for (const targetModel of modelCandidates) {

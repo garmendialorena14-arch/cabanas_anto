@@ -150,26 +150,42 @@ Responde ÚNICAMENTE con el siguiente objeto JSON estricto sin bloques markdown 
 }`;
 
     const ai = new GoogleGenAI({ apiKey });
-    const aiRes = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { text: prompt },
+    const visionModels = ['gemini-3.1-flash-lite', 'gemini-3.8-flash'];
+    let aiRes: any = null;
+    let lastErr: any = null;
+
+    for (const vModel of visionModels) {
+      try {
+        aiRes = await ai.models.generateContent({
+          model: vModel,
+          contents: [
             {
-              inlineData: {
-                mimeType,
-                data: base64Data,
-              },
+              role: 'user',
+              parts: [
+                { text: prompt },
+                {
+                  inlineData: {
+                    mimeType,
+                    data: base64Data,
+                  },
+                },
+              ],
             },
           ],
-        },
-      ],
-      config: {
-        temperature: 0.1,
-      },
-    });
+          config: {
+            temperature: 0.1,
+          },
+        });
+        if (aiRes?.text) break;
+      } catch (mErr: any) {
+        lastErr = mErr;
+        console.warn(`[DocumentVision] Modelo ${vModel} falló:`, mErr.message);
+      }
+    }
+
+    if (!aiRes || !aiRes.text) {
+      throw lastErr || new Error('No se pudo analizar la imagen con los modelos de visión disponibles.');
+    }
 
     const rawJson = (aiRes.text || '').replace(/```json/gi, '').replace(/```/g, '').trim();
     const parsed = JSON.parse(rawJson);

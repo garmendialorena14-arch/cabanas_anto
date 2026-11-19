@@ -96,6 +96,7 @@ export async function GET(req: NextRequest) {
       try {
         const ai = new GoogleGenAI({ apiKey });
         const prompt = `Analiza detalladamente la conversación de chat entre el huésped y el complejo de cabañas para extraer TODOS los datos de la reserva turística en formato JSON estricto.
+REGLA FUNDAMENTAL: Si en el chat se coordinaron reservas previas y el cliente pide "otra reserva", "una segunda cabaña para otra familia", o pasa datos de un nuevo titular (por ejemplo Hugo Garmendia), extrae SIEMPRE los datos de la NUEVA / MÁS RECIENTE reserva que se está solicitando o acordando.
 
 Lista de Cabañas existentes en el predio:
 ${(cabins || []).map((c: any) => `- Cabaña ${c.cabin_number} ("${c.name}"): capacidad máx ${c.max_guests} personas, planta ${c.floor}, accesible movilidad reducida: ${c.has_accessible_mobility ? 'SÍ' : 'NO'}, tarifa base: USD ${c.base_rate_usd}/noche`).join('\n')}

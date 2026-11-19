@@ -331,9 +331,15 @@ export default function ReceptionPortalPage() {
   ): Promise<boolean> => {
     try {
       const supabase = createClient();
+      const sanitizedResData = {
+        ...newResData,
+        guest_dni: (newResData.guest_dni || '').trim() || 'N/A',
+        guest_phone: (newResData.guest_phone || '').trim() || 'N/A',
+        guest_email: (newResData.guest_email || '').trim() || 'contacto@cabanasanto.com',
+      };
       const { data, error } = await supabase
         .from('reservations')
-        .insert(newResData)
+        .insert(sanitizedResData)
         .select()
         .single();
 

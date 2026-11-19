@@ -756,28 +756,42 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
                     Reserva #{activeReservation.id.slice(0, 8).toUpperCase()}
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleApproveDniDocument();
-                  }}
-                  disabled={approvingDni}
-                  className="w-full py-2 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all border border-sky-400/30 disabled:opacity-50"
-                  title="Validar el documento de identidad recibido e informar al huésped sin crear otra reserva"
-                >
-                  {approvingDni ? (
-                    <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Aprobando DNI...</span>
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle2 className="w-3.5 h-3.5 text-sky-200" />
-                      <span>Aprobar DNI y Dar OK al Huésped</span>
-                    </>
-                  )}
-                </button>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleApproveDniDocument();
+                    }}
+                    disabled={approvingDni}
+                    className="py-2 px-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all border border-sky-400/30 disabled:opacity-50"
+                    title="Validar el documento de identidad recibido e informar al huésped"
+                  >
+                    {approvingDni ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Aprobando...</span>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-3.5 h-3.5 text-sky-200" />
+                        <span>Aprobar DNI</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleOpenBookingModal();
+                    }}
+                    className="py-2 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all border border-emerald-400/30"
+                    title="Crear una nueva reserva para este u otro huésped con los datos de esta foto"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />
+                    <span>Nueva Reserva</span>
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -968,22 +982,23 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
 
             {/* Acciones de Cabecera: Confirmar Seña / Selector Asistente / Control Humano */}
             <div className="flex items-center gap-2">
-              {/* Botón Principal o Badge de Reserva Activa */}
-              {activeReservation ? (
+              {/* Badge de Reserva Activa si existe */}
+              {activeReservation && (
                 <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30 shadow-xs" title="Este chat ya tiene una reserva formal confirmada en el sistema">
                   <CheckCircle2 className="w-3.5 h-3.5 text-amber-400" />
                   <span>Reserva #{activeReservation.id.slice(0, 8).toUpperCase()} (Cabaña {activeReservation.cabins?.cabin_number || '8'})</span>
                 </div>
-              ) : (
-                <button
-                  onClick={handleOpenBookingModal}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-950/40 transition-all border border-emerald-500/30"
-                  title="Confirmar seña y emitir Nº de Reserva al huésped"
-                >
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  Confirmar Seña y Crear Reserva
-                </button>
               )}
+
+              {/* Botón Principal: Confirmar Seña o Nueva Reserva */}
+              <button
+                onClick={handleOpenBookingModal}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-950/40 transition-all border border-emerald-500/30"
+                title={activeReservation ? "Crear una nueva reserva adicional para otra cabaña o fecha" : "Confirmar seña y emitir Nº de Reserva al huésped"}
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                {activeReservation ? '➕ Nueva Reserva' : 'Confirmar Seña y Crear Reserva'}
+              </button>
 
               {/* Botón de Control Humano / IA */}
               <button

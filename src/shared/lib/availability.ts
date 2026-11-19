@@ -112,10 +112,15 @@ export async function checkCabinAvailability(
 
   // 4. Filtrar por requerimientos del huésped:
   // - Movilidad reducida: OBLIGATORIO c.has_accessible_mobility === true (Planta Baja PB)
-  // - Capacidad: c.max_guests >= guestCount
+  // - Capacidad: c.max_guests >= guestCount (o hasta 5 pax en cabaña de 4 PB con cama supletoria/cuna)
   const suitableCabins = freeCabins.filter((c: any) => {
     if (hasReducedMobility && !c.has_accessible_mobility) return false;
-    if (guestCount && c.max_guests < guestCount) return false;
+    if (guestCount && c.max_guests < guestCount) {
+      if (hasReducedMobility && guestCount <= 5 && c.has_accessible_mobility && c.max_guests >= 4) {
+        return true; // Acepta cabaña PB de 4 pax para 5 huéspedes con plaza adicional acordada
+      }
+      return false;
+    }
     return true;
   });
 
