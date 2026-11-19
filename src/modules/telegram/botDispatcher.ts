@@ -54,6 +54,16 @@ export interface TelegramUpdate {
   };
 }
 
+export function normalizePhoneNumber(raw: string | null | undefined): string {
+  if (!raw) return '';
+  let digits = raw.replace(/\D/g, '');
+  if (digits.startsWith('549')) digits = digits.slice(3);
+  else if (digits.startsWith('54')) digits = digits.slice(2);
+  if (digits.startsWith('0')) digits = digits.slice(1);
+  if (digits.length === 11 && digits.startsWith('1115')) digits = '11' + digits.slice(4);
+  return digits;
+}
+
 export async function processTelegramUpdate(update: TelegramUpdate): Promise<{ success: boolean; reason?: string }> {
   if (!update.message) {
     return { success: true, reason: 'No message in update' };
@@ -85,13 +95,7 @@ export async function processTelegramUpdate(update: TelegramUpdate): Promise<{ s
 
   const telegram = new TelegramClient(botToken);
   const authorizedOwnerId = channelData?.owner_chat_id || process.env.TELEGRAM_NOTIFICATION_CHAT_ID;
-  const isOwner = Boolean(
-    authorizedOwnerId && (
-      chatId === authorizedOwnerId ||
-      from.id.toString() === authorizedOwnerId ||
-      (from.username && `@${from.username.toLowerCase()}` === authorizedOwnerId.toLowerCase())
-    )
-  );
+  const ownerPhoneConfigured = channelData?.owner_phone || process.env.OWNER_PHONE;
 
   // 2. Buscar o crear el Contacto
   let contactId: string;
@@ -108,6 +112,22 @@ export async function processTelegramUpdate(update: TelegramUpdate): Promise<{ s
     if (phoneMatch) {
       detectedPhone = phoneMatch[0].replace(/[\s-]+/g, '');
     }
+  }
+
+  // Determinación estricta de Identidad del Propietario (Prioridad absoluta: Teléfono del Propietario)
+  const currentContactPhone = existingContact?.phone || detectedPhone || '';
+  let isOwner = false;
+  if (ownerPhoneConfigured) {
+    const normOwner = normalizePhoneNumber(ownerPhoneConfigured);
+    const normContact = normalizePhoneNumber(currentContactPhone);
+    isOwner = Boolean(normContact && normOwner && normContact === normOwner);
+  } else if (authorizedOwnerId) {
+    // Si aún no se configuró teléfono del dueño, validación por Chat ID o Username exacto
+    isOwner = Boolean(
+      chatId === authorizedOwnerId ||
+      from.id.toString() === authorizedOwnerId ||
+      (from.username && `@${from.username.toLowerCase()}` === authorizedOwnerId.toLowerCase())
+    );
   }
 
   if (existingContact) {
@@ -407,9 +427,33 @@ export async function processTelegramUpdate(update: TelegramUpdate): Promise<{ s
     return { success: true };
   }
 
-  // 7. CASO ESPECIAL: ASISTENTE PRIVADO DEL PROPIETARIO
-  if (isOwner) {
-    // Comandos directos rápidos
+  // 7. CASO ESPECIAL: ASISTENTE PRIVADO DEL PROPIETARIO Y COMANDOS OPERATIVOS
+  const isOwnerCommand =
+    lowerText === '/ocupacion' ||
+    lowerText === '/caja' ||
+    lowerText === '/bloquear' ||
+    lowerText.startsWith('/ocupacion') ||
+    lowerText.startsWith('/caja') ||
+    lowerText.startsWith('/bloquear') ||
+    lowerText.startsWith('/propietario') ||
+    lowerText.startsWith('/admin') ||
+    lowerText === 'ocupacion' ||
+    lowerText === 'caja' ||
+    lowerText === 'ocupación';
+
+  if (isOwnerCommand) {
+    if (!isOwner) {
+      const deniedReply = `🔒 <b>Acceso Restringido:</b>\n\nEl Asistente del Propietario y los comandos operativos (<code>/ocupacion</code>, <code>/caja</code>, <code>/bloquear</code>) responden <b>únicamente al número de teléfono del propietario registrado</b>.\n\nSi deseas consultar disponibilidad o cotizar tu estadía en <b>Mar Azul</b>, por favor indícanos tus fechas y cantidad de personas para brindarte toda la información. ¡Con gusto te ayudamos! 🌲🌊`;
+      await supabase.from('messages').insert({
+        conversation_id: conversationId,
+        sender_type: 'assistant',
+        content: deniedReply,
+      });
+      await telegram.sendMessage(chatId, deniedReply, { parse_mode: 'HTML' });
+      return { success: true };
+    }
+
+    // Comandos directos rápidos para el propietario autorizado
     if (lowerText === '/ocupacion' || lowerText.includes('ocupacion') || lowerText.includes('ocupación')) {
       const todayDate = new Date().toISOString().split('T')[0];
       const { data: allCabins } = await supabase.from('cabins').select('cabin_number, name').order('cabin_number');
@@ -474,35 +518,70 @@ export async function processTelegramUpdate(update: TelegramUpdate): Promise<{ s
     }
   }
 
-  // 8. OBTENER ASISTENTE ACTIVO Y SU SYSTEM PROMPT
+  // 8. OBTENER ASISTENTE ACTIVO Y SU SYSTEM PROMPT (100% DINÁMICO DESDE EL CRM)
   let systemPrompt = '';
-  let model = 'gemini-2.5-flash';
+  let model = 'gemini-3.1-flash-lite';
 
-  if (assistantId) {
-    const { data: asst } = await supabase
-      .from('assistants')
-      .select('system_prompt, model, name')
-      .eq('id', assistantId)
-      .single();
-
-    if (asst) {
-      systemPrompt = asst.system_prompt;
-      model = asst.model || 'gemini-2.5-flash';
-    }
-  }
-
-  if (!systemPrompt) {
-    // Asistente fallback por defecto
-    const targetName = isOwner ? 'Asistente Privado del Propietario' : 'Reservas y Disponibilidad';
-    const { data: fbAsst } = await supabase
+  if (isOwner) {
+    // Si es el propietario verificado por teléfono: Usar el Asistente Privado del Propietario
+    const { data: ownerAsst } = await supabase
       .from('assistants')
       .select('system_prompt, model')
-      .ilike('name', `%${targetName}%`)
+      .ilike('name', '%Propietario%')
       .limit(1)
       .maybeSingle();
 
-    systemPrompt = fbAsst?.system_prompt || 'Eres el asistente del complejo de cabañas Anto.';
-    model = fbAsst?.model || 'gemini-2.5-flash';
+    systemPrompt =
+      ownerAsst?.system_prompt ||
+      'Eres el Asistente Ejecutivo Privado del Propietario del Complejo de Cabañas Anto en Mar Azul. Canal confidencial para la administración.';
+    model = ownerAsst?.model || 'gemini-3.1-flash-lite';
+  } else {
+    // Si es un huésped: Cargar los prompts activos directamente configurados en el CRM
+    const { data: activeAssistants } = await supabase
+      .from('assistants')
+      .select('id, name, system_prompt, model, is_active')
+      .eq('is_active', true)
+      .neq('name', 'Asistente Privado del Propietario')
+      .order('created_at');
+
+    const assts = activeAssistants || [];
+    const selectedAsst = assts.find((a) => a.id === assistantId);
+
+    // Módulos configurados en el CRM:
+    const faqAsst = assts.find(
+      (a) => a.name.toLowerCase().includes('faq') || a.name.toLowerCase().includes('consulta')
+    );
+    const cobrosAsst = assts.find(
+      (a) => a.name.toLowerCase().includes('cobro') || a.name.toLowerCase().includes('seña')
+    );
+    const reservasAsst = assts.find(
+      (a) => a.name.toLowerCase().includes('reserva') || a.name.toLowerCase().includes('disponibilidad')
+    );
+
+    const promptSections: string[] = [];
+
+    // Si el operador fijó un asistente puntual en la conversación (distinto al general):
+    if (selectedAsst && selectedAsst.id !== reservasAsst?.id && selectedAsst.id !== faqAsst?.id) {
+      promptSections.push(`### INSTRUCCIONES ASIGNADAS (${selectedAsst.name}):\n${selectedAsst.system_prompt}`);
+    }
+
+    // 1. Consultas Generales y FAQ (incluye ubicación, coordenadas Google Maps, servicios, mascotas, etc.)
+    if (faqAsst) {
+      promptSections.push(`### CONSULTAS FRECUENTES, SERVICIOS Y UBICACIÓN (CONFIGURACIÓN ACTIVA EN CRM):\n${faqAsst.system_prompt}`);
+    }
+
+    // 2. Cobros y Señas (incluye políticas de pago, alias oficiales CABANAS.ANTO.PESOS, porcentaje de seña, etc.)
+    if (cobrosAsst) {
+      promptSections.push(`### POLÍTICAS DE PAGO Y MEDIOS DE TRANSFERENCIA (CONFIGURACIÓN ACTIVA EN CRM):\n${cobrosAsst.system_prompt}`);
+    }
+
+    // 3. Reservas y Disponibilidad (flujo conversacional, toma de datos, confirmación y checklist)
+    if (reservasAsst) {
+      promptSections.push(`### FLUJO DE RESERVAS Y ATENCIÓN A HUÉSPEDES (CONFIGURACIÓN ACTIVA EN CRM):\n${reservasAsst.system_prompt}`);
+    }
+
+    systemPrompt = promptSections.join('\n\n======================================================================\n');
+    model = selectedAsst?.model || reservasAsst?.model || faqAsst?.model || 'gemini-3.1-flash-lite';
   }
 
   // 9. RECOPILAR CONTEXTO VIVO DEL COMPLEJO
@@ -562,7 +641,7 @@ REGLAS CRÍTICAS DE DISPONIBILIDAD PARA LA IA:
 Política de Seña: 30% congelando el valor en USD. Saldo restante (70%) se abona al check-in.
 Horarios: Check-in 14:00 hs, Check-out 10:00 hs.
 Servicios incluidos: Desayuno artesanal (con opción sin TACC previo aviso), cochera cubierta individual, ropa blanca, acceso a pileta y WiFi.
-Datos de cuenta para señas: Transferencia bancaria al Alias: CABANAS.ANTO.RESERVAS (Titular: Complejo Cabañas Anto).`;
+Datos de cuenta y alias para señas: Utilizar estrictamente las cuentas bancarias y alias configurados en el CRM (sección Cobros y Señas).`;
   } catch (ctxErr) {
     console.warn('Error al armar contextData:', ctxErr);
   }

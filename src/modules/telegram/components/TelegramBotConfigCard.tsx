@@ -12,6 +12,7 @@ import {
   Key,
   Globe,
   UserCheck,
+  Phone,
   Info,
 } from 'lucide-react';
 
@@ -20,6 +21,7 @@ export default function TelegramBotConfigCard() {
   const [saving, setSaving] = useState(false);
   const [botToken, setBotToken] = useState('');
   const [ownerChatId, setOwnerChatId] = useState('');
+  const [ownerPhone, setOwnerPhone] = useState('');
   const [webhookUrl, setWebhookUrl] = useState('');
   const [botInfo, setBotInfo] = useState<any>(null);
   const [webhookInfo, setWebhookInfo] = useState<any>(null);
@@ -43,6 +45,7 @@ export default function TelegramBotConfigCard() {
       const data = await res.json();
       if (data.connection) {
         setOwnerChatId(data.connection.owner_chat_id || '');
+        setOwnerPhone(data.connection.owner_phone || '');
         setWebhookUrl(data.connection.webhook_url || '');
       } else {
         // Sugerir URL por defecto según el navegador
@@ -76,6 +79,7 @@ export default function TelegramBotConfigCard() {
         body: JSON.stringify({
           bot_token: cleanToken,
           owner_chat_id: ownerChatId,
+          owner_phone: ownerPhone,
           webhook_url: webhookUrl,
         }),
       });
@@ -194,10 +198,10 @@ export default function TelegramBotConfigCard() {
             <div>
               <div className="text-[11px] text-slate-400 uppercase tracking-wider font-semibold">Asistente Propietario</div>
               <div className="text-sm font-semibold text-emerald-300">
-                {ownerChatId ? `Chat ID: ${ownerChatId}` : 'No definido'}
+                {ownerPhone ? `Tel: ${ownerPhone}` : ownerChatId ? `Chat ID: ${ownerChatId}` : 'No configurado'}
               </div>
               <div className="text-[11px] text-slate-400">
-                {ownerChatId ? 'Autorizado para /ocupacion y /caja' : 'Cualquiera interactúa como huésped'}
+                {ownerPhone ? '🔒 Autorizado exclusivamente por Teléfono para /ocupacion y /caja' : ownerChatId ? 'Autorizado para /ocupacion y /caja' : 'Cualquiera interactúa como huésped'}
               </div>
             </div>
           </div>
@@ -231,7 +235,7 @@ export default function TelegramBotConfigCard() {
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
             <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5 flex items-center gap-1.5">
               <Globe className="w-3.5 h-3.5 text-indigo-400" />
@@ -245,24 +249,41 @@ export default function TelegramBotConfigCard() {
               className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors"
             />
             <p className="text-[11px] text-slate-400 mt-1">
-              Debe comenzar con HTTPS. En desarrollo local puedes usar ngrok o localtunnel.
+              URL del webhook HTTPS donde Telegram enviará los mensajes.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-emerald-400 mb-1.5 flex items-center gap-1.5">
+              <Phone className="w-3.5 h-3.5 text-emerald-400" />
+              Teléfono Celular del Propietario
+            </label>
+            <input
+              type="text"
+              placeholder="Ej: +54 9 11 4455-8801 o 2255 473073"
+              value={ownerPhone}
+              onChange={(e) => setOwnerPhone(e.target.value)}
+              className="w-full bg-slate-950 border border-emerald-500/50 rounded-xl px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-400 transition-colors"
+            />
+            <p className="text-[11px] text-slate-400 mt-1">
+              <b>Seguridad crítica:</b> Únicamente quien escriba desde este número de teléfono podrá ejecutar <code>/ocupacion</code>, <code>/caja</code> y acceder al asistente privado.
             </p>
           </div>
 
           <div>
             <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5 flex items-center gap-1.5">
-              <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
-              Telegram Chat ID / Username del Dueño
+              <UserCheck className="w-3.5 h-3.5 text-slate-400" />
+              Chat ID del Dueño (Opcional)
             </label>
             <input
               type="text"
-              placeholder="Ej: 123456789 o @tuusuario"
+              placeholder="Ej: 1645339757 o @tuusuario"
               value={ownerChatId}
               onChange={(e) => setOwnerChatId(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-slate-500 transition-colors"
             />
             <p className="text-[11px] text-slate-400 mt-1">
-              Permite recibir consultas privadas del complejo y ejecutar comandos como /ocupacion o /caja.
+              Identificador numérico opcional de Telegram para notificaciones push directas.
             </p>
           </div>
         </div>

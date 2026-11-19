@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
     const supabase = auth.supabase;
 
     const body = await req.json();
-    const { bot_token, owner_chat_id, webhook_url, is_active } = body;
+    const { bot_token, owner_chat_id, owner_phone, webhook_url, is_active } = body;
 
     // Si el usuario no ingresó un nuevo token (o envió las viñetas del placeholder/autofill), reutilizar el existente
     let effectiveToken = (bot_token || '').trim();
@@ -99,6 +99,7 @@ export async function POST(req: NextRequest) {
         bot_username: botMe.username,
         webhook_url: cleanWebhookUrl || null,
         owner_chat_id: owner_chat_id ? owner_chat_id.trim() : null,
+        owner_phone: owner_phone ? owner_phone.trim() : null,
         is_active: is_active ?? true,
       })
       .select('*')

@@ -365,6 +365,7 @@ export interface ChannelConnection {
   webhook_url?: string | null;
   webhook_secret?: string | null;
   owner_chat_id?: string | null;
+  owner_phone?: string | null;
   is_active: boolean;
   created_at: string;
   updated_at: string;
