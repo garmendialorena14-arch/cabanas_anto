@@ -228,6 +228,39 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
     const totalArsBooking = Math.round(numTotalUsd * blueRate);
     const balancePendingUsd = Math.max(0, numTotalUsd - numSenaUsd);
 
+    // 3b. PREVENCIÓN DE DUPLICADOS: Verificar si ya existe una reserva activa para este contacto
+    if (contact_id) {
+      const { data: existingActive } = await supabase
+        .from('reservations')
+        .select('*, cabins(*)')
+        .eq('contact_id', contact_id)
+        .in('status', ['senada', 'confirmada', 'checkin'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (existingActive) {
+        // La reserva ya existe: Actualizar datos (DNI, patente, notas) en lugar de duplicar
+        const updates: Record<string, any> = { updated_at: new Date().toISOString() };
+        if (guest_dni && guest_dni !== 'N/A') updates.guest_dni = guest_dni.trim();
+        if (vehicle_license_plate) updates.vehicle_license_plate = vehicle_license_plate.trim().toUpperCase();
+        if (has_celiac_sin_tacc !== undefined) updates.has_celiac_sin_tacc = Boolean(has_celiac_sin_tacc);
+        if (has_reduced_mobility !== undefined) updates.has_reduced_mobility = Boolean(has_reduced_mobility);
+        if (guest_phone && guest_phone !== 'N/A') updates.guest_phone = guest_phone.trim();
+
+        await supabase.from('reservations').update(updates).eq('id', existingActive.id);
+
+        const existingCode = 'ANTO-' + existingActive.id.slice(0, 8).toUpperCase();
+        return NextResponse.json({
+          ok: true,
+          alreadyExists: true,
+          reservation: existingActive,
+          reservationCode: existingCode,
+          message: `La reserva #${existingCode} ya se encuentra activa para este huésped. Datos actualizados correctamente sin duplicar.`,
+        });
+      }
+    }
+
     // 4. Crear Reserva en la tabla reservations
     const finalGuestName = (guest_name || '').trim() || 'Huésped Telegram';
     const finalGuestPhone = (guest_phone || '').trim() || 'N/A';
@@ -237,6 +270,7 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
     const { data: newReservation, error: resErr } = await supabase
       .from('reservations')
       .insert({
+        contact_id: contact_id || null,
         cabin_id: cabin.id,
         guest_name: finalGuestName,
         guest_phone: finalGuestPhone,

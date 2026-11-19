@@ -53,6 +53,7 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
   const [creatingBooking, setCreatingBooking] = useState(false);
   const [confirmingAuto, setConfirmingAuto] = useState(false);
   const [activeReservation, setActiveReservation] = useState<any | null>(null);
+  const [approvingDni, setApprovingDni] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Formulario de Reserva Rápida
@@ -168,24 +169,46 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
   async function loadActiveReservation() {
     try {
       const conv = conversations.find((c) => c.id === selectedConvId);
-      if (!conv?.contact) return;
+      if (!conv) return;
 
       const supabase = createClient();
-      let query = supabase
-        .from('reservations')
-        .select('*, cabins(*)')
-        .in('status', ['senada', 'confirmada', 'checkin'])
-        .order('created_at', { ascending: false })
-        .limit(1);
 
-      if (conv.contact.phone) {
-        query = query.eq('guest_phone', conv.contact.phone);
-      } else if (conv.contact.full_name) {
-        query = query.ilike('guest_name', `%${conv.contact.full_name}%`);
+      // 1. Buscar por contact_id directo de la conversación
+      if (conv.contact_id) {
+        const { data: byContact } = await supabase
+          .from('reservations')
+          .select('*, cabins(*)')
+          .eq('contact_id', conv.contact_id)
+          .in('status', ['senada', 'confirmada', 'checkin'])
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (byContact) {
+          setActiveReservation(byContact);
+          return;
+        }
       }
 
-      const { data } = await query.maybeSingle();
-      setActiveReservation(data || null);
+      // 2. Fallback: Buscar por teléfono del contacto
+      const contact = conv.contact;
+      if (contact?.phone) {
+        const { data: byPhone } = await supabase
+          .from('reservations')
+          .select('*, cabins(*)')
+          .eq('guest_phone', contact.phone)
+          .in('status', ['senada', 'confirmada', 'checkin'])
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (byPhone) {
+          setActiveReservation(byPhone);
+          return;
+        }
+      }
+
+      setActiveReservation(null);
     } catch (err) {
       console.warn('Error al verificar reserva activa:', err);
     }
@@ -458,6 +481,54 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
     }
   }
 
+  // Aprobar y Dar OK a la Documentación (DNI) de la Reserva Activa
+  async function handleApproveDniDocument() {
+    if (!activeReservation || !selectedConversation) return;
+
+    setApprovingDni(true);
+    try {
+      const reservationCode = 'ANTO-' + activeReservation.id.slice(0, 8).toUpperCase();
+      const cabinNum = activeReservation.cabins?.cabin_number || 'asignada';
+      const approvalText = `🪪 <b>¡Documentación recibida y verificada con éxito!</b>\n\nHemos registrado las fotos de tu DNI / Pasaporte para tu estadía en <b>Cabaña ${cabinNum}</b> (Reserva <code>#${reservationCode}</code>).\n\nTu ficha de registro está 100% completa. ¡Te esperamos en Mar Azul para disfrutar de una excelente estadía! 🌲🌊`;
+
+      // Enviar mensaje al huésped por Telegram
+      const res = await fetch('/api/telegram/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: selectedConversation.id,
+          content: approvalText,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'Error al validar documentación');
+      }
+
+      // Registrar nota en la reserva
+      const supabase = createClient();
+      await supabase
+        .from('reservations')
+        .update({
+          internal_notes: `${activeReservation.internal_notes || ''} | DNI verificado por recepción`.trim(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', activeReservation.id);
+
+      setToastMessage(`✓ ¡Documentación de identidad aprobada para la Reserva #${reservationCode}!`);
+      setTimeout(() => setToastMessage(null), 8000);
+
+      loadMessages(selectedConversation.id, true);
+      loadActiveReservation();
+    } catch (err: any) {
+      console.error('Error al aprobar DNI:', err);
+      alert(err.message || 'Error al aprobar documento.');
+    } finally {
+      setApprovingDni(false);
+    }
+  }
+
   // Renderizador de Contenido de Mensajes (Soporte de Fotos de Comprobante / DNI)
   function renderMessageContent(content: string) {
     const mediaRegex = /\[MEDIA_ATTACHMENT:file_id=([^&\]]+)&type=([^&\]]+)(?:&name=([^\]]+))?\]/g;
@@ -497,8 +568,8 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
               </div>
             </div>
 
-            {/* Acciones al lado/debajo de la foto para confirmar seña */}
-            {!activeReservation && (
+            {/* Acciones al lado/debajo de la foto */}
+            {!activeReservation ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1">
                 <button
                   type="button"
@@ -532,6 +603,39 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
                     <>
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />
                       <span>Confirmar (1 Clic)</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            ) : (
+              <div className="p-2 rounded-xl bg-slate-900 border border-slate-700/80 space-y-1.5 mt-1">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="font-semibold text-sky-300 flex items-center gap-1">
+                    <FileText className="w-3.5 h-3.5 text-sky-400" /> DNI / Documentación de Huésped
+                  </span>
+                  <span className="text-[10px] text-amber-300 font-bold bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/30">
+                    Reserva #{activeReservation.id.slice(0, 8).toUpperCase()}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleApproveDniDocument();
+                  }}
+                  disabled={approvingDni}
+                  className="w-full py-2 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all border border-sky-400/30 disabled:opacity-50"
+                  title="Validar el documento de identidad recibido e informar al huésped sin crear otra reserva"
+                >
+                  {approvingDni ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Aprobando DNI...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5 text-sky-200" />
+                      <span>Aprobar DNI y Dar OK al Huésped</span>
                     </>
                   )}
                 </button>
@@ -725,15 +829,22 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
 
             {/* Acciones de Cabecera: Confirmar Seña / Selector Asistente / Control Humano */}
             <div className="flex items-center gap-2">
-              {/* Botón Principal: Confirmar Seña y Crear Reserva */}
-              <button
-                onClick={handleOpenBookingModal}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-950/40 transition-all border border-emerald-500/30"
-                title="Confirmar seña y emitir Nº de Reserva al huésped"
-              >
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                Confirmar Seña y Crear Reserva
-              </button>
+              {/* Botón Principal o Badge de Reserva Activa */}
+              {activeReservation ? (
+                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30 shadow-xs" title="Este chat ya tiene una reserva formal confirmada en el sistema">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Reserva #{activeReservation.id.slice(0, 8).toUpperCase()} (Cabaña {activeReservation.cabins?.cabin_number || '8'})</span>
+                </div>
+              ) : (
+                <button
+                  onClick={handleOpenBookingModal}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-950/40 transition-all border border-emerald-500/30"
+                  title="Confirmar seña y emitir Nº de Reserva al huésped"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  Confirmar Seña y Crear Reserva
+                </button>
+              )}
 
               {/* Botón de Control Humano / IA */}
               <button
