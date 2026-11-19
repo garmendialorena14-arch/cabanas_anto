@@ -28,9 +28,10 @@ import { createClient } from '@/shared/lib/supabase/client';
 
 interface TelegramCrmInboxViewProps {
   onOpenCreateReservation?: (guestName?: string) => void;
+  onReservationCreated?: () => void;
 }
 
-export default function TelegramCrmInboxView({ onOpenCreateReservation }: TelegramCrmInboxViewProps) {
+export default function TelegramCrmInboxView({ onOpenCreateReservation, onReservationCreated }: TelegramCrmInboxViewProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [cabins, setCabins] = useState<any[]>([]);
@@ -414,6 +415,7 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
       loadMessages(selectedConversation.id, true);
       loadActiveReservation();
       loadConversations(true);
+      onReservationCreated?.();
     } catch (err: any) {
       console.error('Error creando reserva automática:', err);
       alert(err.message || 'Error al crear la reserva.');
@@ -447,6 +449,7 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation }: Telegr
       loadMessages(selectedConversation.id, true);
       loadActiveReservation();
       loadConversations(true);
+      onReservationCreated?.();
     } catch (err: any) {
       console.error('Error en creación automática:', err);
       alert(err.message || 'Error al crear la reserva automática.');

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import InternalPortalHeader from '@/shared/components/InternalPortalHeader';
 import SessionSecurityGuard from '@/shared/components/SessionSecurityGuard';
 import { createClient } from '@/shared/lib/supabase/client';
@@ -116,8 +116,8 @@ export default function AdminDashboardPage() {
   const todayStr = '2026-11-16';
 
   // 1. Cargar datos principales
-  useEffect(() => {
-    async function loadData() {
+  const loadAdminData = useCallback(async () => {
+    try {
       const supabase = createClient();
 
       // Cargar tasa
@@ -222,9 +222,13 @@ export default function AdminDashboardPage() {
         .select('*')
         .order('role');
       if (profData) setUsers(profData);
+    } catch (err) {
+      console.error('Error cargando datos de admin:', err);
     }
+  }, []);
 
-    loadData();
+  useEffect(() => {
+    loadAdminData();
 
     // Sincronización en tiempo real (Reservas y Consultas sincronizadas con Recepción)
     const supabase = createClient();
@@ -269,7 +273,14 @@ export default function AdminDashboardPage() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [loadAdminData]);
+
+  // Recargar datos operativos al cambiar a la vista de calendario
+  useEffect(() => {
+    if (activeView === 'calendar') {
+      loadAdminData();
+    }
+  }, [activeView, loadAdminData]);
 
   // 2. Cargar historial de auditoría al seleccionar una reserva
   useEffect(() => {
@@ -988,6 +999,7 @@ export default function AdminDashboardPage() {
           {activeView === 'telegram_crm' && (
             <div className="space-y-4">
               <TelegramCrmInboxView
+                onReservationCreated={loadAdminData}
                 onOpenCreateReservation={(guestName) => {
                   setSelectedLeadForBooking({
                     id: `tg_${Date.now()}`,

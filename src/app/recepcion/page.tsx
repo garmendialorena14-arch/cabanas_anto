@@ -239,6 +239,13 @@ export default function ReceptionPortalPage() {
     };
   }, [loadReceptionData]);
 
+  // Recargar reservas y ocupación al cambiar al tab de calendario
+  useEffect(() => {
+    if (activeTab === 'calendar') {
+      loadReceptionData();
+    }
+  }, [activeTab, loadReceptionData]);
+
   // Cargar historial de cambios de la reserva seleccionada
   useEffect(() => {
     async function loadReservationChanges() {
@@ -858,6 +865,7 @@ export default function ReceptionPortalPage() {
               onOpenCreateReservation={(guestName) => {
                 setShowCreateModal(true);
               }}
+              onReservationCreated={loadReceptionData}
             />
           </div>
         )}
