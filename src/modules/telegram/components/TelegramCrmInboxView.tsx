@@ -22,6 +22,7 @@ import {
   FileText,
   DollarSign,
   AlertTriangle,
+  ShieldCheck,
 } from 'lucide-react';
 import { Conversation, Message, Assistant, Cabin } from '@/shared/types';
 import { createClient } from '@/shared/lib/supabase/client';
@@ -604,8 +605,8 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
     }
   }
 
-  // Renderizador de Contenido de Mensajes (Soporte de Fotos de Comprobante / DNI)
-  function renderMessageContent(content: string) {
+  // Renderizador de Contenido de Mensajes (Soporte de Fotos de Comprobante / DNI + IA Visión)
+  function renderMessageContent(content: string, msg?: any) {
     const mediaRegex = /\[MEDIA_ATTACHMENT:file_id=([^&\]]+)&type=([^&\]]+)(?:&name=([^\]]+))?\]/g;
     const match = mediaRegex.exec(content);
 
@@ -617,6 +618,7 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
     const fileType = match[2];
     const fileName = match[3] ? decodeURIComponent(match[3]) : 'Archivo adjunto';
     const textWithoutMedia = content.replace(mediaRegex, '').trim();
+    const aiEval = msg?.payload?.ai_evaluation;
 
     return (
       <div className="space-y-2">
@@ -643,7 +645,69 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
               </div>
             </div>
 
-            {/* Acciones al lado/debajo de la foto */}
+            {/* Tarjeta de Pre-análisis Inteligente de la IA (Visión Multimodal) */}
+            {aiEval && (
+              <div
+                className={`p-2.5 rounded-xl border text-xs space-y-1.5 ${
+                  aiEval.es_valido
+                    ? 'bg-emerald-950/50 border-emerald-500/40 text-emerald-100'
+                    : aiEval.tipo_detectado === 'otro'
+                    ? 'bg-rose-950/50 border-rose-500/40 text-rose-100'
+                    : 'bg-amber-950/50 border-amber-500/40 text-amber-100'
+                }`}
+              >
+                <div className="flex items-center justify-between font-bold text-[11px]">
+                  <span className="flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                    {aiEval.tipo_detectado === 'dni_o_pasaporte'
+                      ? 'Pre-evaluación IA: DNI / Documento'
+                      : aiEval.tipo_detectado === 'comprobante_transferencia'
+                      ? 'Pre-evaluación IA: Comprobante de Pago'
+                      : 'Pre-evaluación IA: Imagen No Correspondiente'}
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded text-[10px] uppercase font-mono font-bold border ${
+                      aiEval.es_valido
+                        ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-300'
+                        : aiEval.tipo_detectado === 'otro'
+                        ? 'bg-rose-500/20 border-rose-500/30 text-rose-300'
+                        : 'bg-amber-500/20 border-amber-500/30 text-amber-300'
+                    }`}
+                  >
+                    {aiEval.es_valido ? '✓ Validado por IA' : '⚠️ Requiere Atención'}
+                  </span>
+                </div>
+
+                <p className="text-[11px] leading-tight text-slate-200">
+                  {aiEval.motivo}
+                </p>
+
+                {aiEval.datos_extraidos?.dni_numero && (
+                  <div className="p-1.5 rounded-lg bg-slate-950/80 border border-slate-800 text-[11px] font-mono text-emerald-300">
+                    🪪 <b>DNI detectado:</b> {aiEval.datos_extraidos.dni_numero}
+                    {aiEval.datos_extraidos.nombre_apellido ? ` • ${aiEval.datos_extraidos.nombre_apellido}` : ''}
+                  </div>
+                )}
+
+                {aiEval.datos_extraidos?.monto_ars && (
+                  <div className="p-1.5 rounded-lg bg-slate-950/80 border border-slate-800 text-[11px] font-mono text-emerald-300">
+                    💰 <b>Monto seña:</b> ${Number(aiEval.datos_extraidos.monto_ars).toLocaleString('es-AR')} ARS
+                    {aiEval.datos_extraidos.destinatario_coincide !== null && (
+                      <span className={aiEval.datos_extraidos.destinatario_coincide ? ' text-emerald-400 ml-1.5 font-bold' : ' text-rose-400 ml-1.5 font-bold'}>
+                        ({aiEval.datos_extraidos.destinatario_coincide ? '✓ Destinatario: Cabañas Anto' : '⚠️ Destinatario no coincide'})
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-1 text-[10px] text-slate-400 pt-0.5">
+                  <ShieldCheck className="w-3 h-3 text-sky-400 shrink-0" />
+                  <span>Protegido por Ley 25.326 de Protección de Datos Personales (Uso exclusivo: check-in).</span>
+                </div>
+              </div>
+            )}
+
+            {/* Acciones al lado/debajo de la foto (Validación Humana Final) */}
             {!activeReservation ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1">
                 <button
@@ -677,7 +741,7 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
                   ) : (
                     <>
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />
-                      <span>Confirmar (1 Clic)</span>
+                      <span>Validar y Confirmar Seña</span>
                     </>
                   )}
                 </button>
@@ -1088,7 +1152,7 @@ export default function TelegramCrmInboxView({ onOpenCreateReservation, onReserv
                           : 'bg-sky-900/60 text-sky-100 rounded-tr-xs border border-sky-700/50'
                       }`}
                     >
-                      {renderMessageContent(msg.content)}
+                      {renderMessageContent(msg.content, msg)}
                     </div>
                   </div>
                 );

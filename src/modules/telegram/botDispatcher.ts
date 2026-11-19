@@ -8,6 +8,7 @@ import { createClient } from '@/shared/lib/supabase/client';
 import { TelegramClient } from './telegramClient';
 import { generateAssistantResponse } from '../ai/geminiClient';
 import { formatARS, formatUSD } from '@/shared/lib/bimonetary';
+import { analyzeTelegramMedia } from '@/modules/ai/documentVisionAnalyzer';
 
 export interface TelegramUpdate {
   update_id: number;
@@ -215,11 +216,15 @@ export async function processTelegramUpdate(update: TelegramUpdate): Promise<{ s
   }
 
   // Registrar mensaje del usuario en la base de datos
-  await supabase.from('messages').insert({
-    conversation_id: conversationId,
-    sender_type: 'user',
-    content: storedUserContent,
-  });
+  const { data: userMsgInserted } = await supabase
+    .from('messages')
+    .insert({
+      conversation_id: conversationId,
+      sender_type: 'user',
+      content: storedUserContent,
+    })
+    .select('id')
+    .single();
 
   // 4b. Detección automática de Patente del vehículo
   const plateMatch = rawText.match(/\b([A-Z]{3}\s*\d{3}|[A-Z]{2}\s*\d{3}\s*[A-Z]{2})\b/i);
@@ -228,6 +233,7 @@ export async function processTelegramUpdate(update: TelegramUpdate): Promise<{ s
     const { data: activeRes } = await supabase
       .from('reservations')
       .select('id, parking_spot_number, vehicle_license_plate')
+      .eq('contact_id', contactId)
       .is('vehicle_license_plate', null)
       .in('status', ['senada', 'confirmada'])
       .order('created_at', { ascending: false })
@@ -251,34 +257,99 @@ export async function processTelegramUpdate(update: TelegramUpdate): Promise<{ s
     }
   }
 
-  // 4c. Si el usuario envió una foto o comprobante
+  // 4c. Si el usuario envió una foto o comprobante: ANÁLISIS INTELIGENTE CON VISIÓN IA
   if (fileId && !isOwner) {
-    // Verificar si ya tiene una reserva confirmada (en tal caso es foto de DNI)
+    // Verificar si el contacto ya tiene una reserva activa
     const { data: userRes } = await supabase
       .from('reservations')
-      .select('id')
-      .in('status', ['senada', 'confirmada'])
+      .select('id, guest_dni, guest_name, cabins(cabin_number)')
+      .eq('contact_id', contactId)
+      .in('status', ['senada', 'confirmada', 'checkin'])
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (userRes) {
-      const docReply = `🪪 <b>¡Foto / Documento recibido con éxito!</b>\n\nHa quedado adjunta a tu ficha de estadía. Nuestro equipo de recepción la revisará para tener tu registro listo al momento de tu llegada a Cabañas Anto. ¡Muchas gracias!`;
+    const hasActiveRes = Boolean(userRes);
+
+    // Ejecutar análisis multimodal con Gemini Vision
+    const analysis = await analyzeTelegramMedia({
+      fileId,
+      hasActiveReservation: hasActiveRes,
+      guestName: fullName,
+    });
+
+    if (analysis) {
+      // Guardar metadatos del análisis visual de la IA en el mensaje del usuario
+      if (userMsgInserted?.id) {
+        await supabase
+          .from('messages')
+          .update({
+            payload: {
+              ai_evaluation: analysis,
+              file_id: fileId,
+              file_type: fileType,
+              purpose: 'checkin_hotelero_seguro_huespedes_ley_25326',
+            },
+          })
+          .eq('id', userMsgInserted.id);
+      }
+
+      // Si es un DNI válido y legible, actualizar de inmediato los datos de la reserva
+      if (analysis.es_valido && analysis.es_dni && userRes) {
+        const resUpdates: Record<string, any> = { updated_at: new Date().toISOString() };
+        if (analysis.datos_extraidos.dni_numero) {
+          resUpdates.guest_dni = analysis.datos_extraidos.dni_numero;
+        }
+        if (
+          analysis.datos_extraidos.nombre_apellido &&
+          (!userRes.guest_name || userRes.guest_name.startsWith('Huésped'))
+        ) {
+          resUpdates.guest_name = analysis.datos_extraidos.nombre_apellido;
+        }
+        await supabase.from('reservations').update(resUpdates).eq('id', userRes.id);
+      }
+
+      // Registrar respuesta de la IA en messages
       await supabase.from('messages').insert({
         conversation_id: conversationId,
         sender_type: 'assistant',
-        content: docReply,
+        content: analysis.mensaje_al_huesped,
+        payload: {
+          ai_evaluation_reply: {
+            tipo: analysis.tipo_detectado,
+            es_valido: analysis.es_valido,
+            motivo: analysis.motivo,
+          },
+        },
       });
-      await telegram.sendMessage(chatId, docReply, { parse_mode: 'HTML' });
+
+      // Actualizar preview de la conversación para la vista del CRM
+      const badgeIcon = analysis.es_valido ? '🟢' : analysis.tipo_detectado === 'otro' ? '🔴' : '🟡';
+      await supabase
+        .from('conversations')
+        .update({
+          last_message_preview: `${badgeIcon} [IA Visión: ${analysis.motivo}]`,
+          last_message_at: new Date().toISOString(),
+        })
+        .eq('id', conversationId);
+
+      // Enviar mensaje al huésped por Telegram
+      await telegram.sendMessage(chatId, analysis.mensaje_al_huesped, { parse_mode: 'HTML' });
       return { success: true };
     } else {
-      const receiptNotice = `📄 <b>¡Comprobante de seña recibido!</b>\n\nNuestro equipo de recepción está verificando la acreditación bancaria. En instantes te confirmamos con tu voucher y número oficial de reserva.\n\n📌 <b>Para ir completando tu ficha de estadía:</b>\n• Indícanos la <b>patente (dominio)</b> de tu auto para registrar el ingreso a la cochera cubierta.\n• Envíanos por este chat las <b>fotos de frente y dorso del DNI o Pasaporte</b> de los huéspedes.\n• Confírmanos si algún integrante requiere desayuno <b>Sin TACC para celíacos</b> o unidad adaptada para <b>movilidad reducida</b>. ¡Muchas gracias!`;
+      // Fallback seguro en caso de corte o error con Gemini API
+      let fallbackText = '';
+      if (hasActiveRes) {
+        fallbackText = `🪪 <b>¡Foto / Documento recibido!</b>\n\nHa quedado adjunta a tu ficha de estadía para que el equipo de recepción la valide formalmente al ingresar.\n\n🔒 <i>Tus datos están protegidos conforme a la Ley 25.326 de Protección de Datos Personales.</i>`;
+      } else {
+        fallbackText = `📄 <b>¡Comprobante de seña recibido!</b>\n\nNuestro equipo de recepción está verificando la acreditación bancaria hacia nuestra cuenta oficial (Alias: <b>CABANAS.ANTO.RESERVAS</b>).\n\n📌 <b>Para tu registro:</b>\n• Indícanos la <b>patente</b> de tu auto para la cochera.\n• Envíanos las fotos de <b>frente y dorso del DNI</b> de los huéspedes. ¡Muchas gracias!`;
+      }
       await supabase.from('messages').insert({
         conversation_id: conversationId,
         sender_type: 'assistant',
-        content: receiptNotice,
+        content: fallbackText,
       });
-      await telegram.sendMessage(chatId, receiptNotice, { parse_mode: 'HTML' });
+      await telegram.sendMessage(chatId, fallbackText, { parse_mode: 'HTML' });
       return { success: true };
     }
   }
