@@ -73,10 +73,13 @@ export async function POST(req: NextRequest) {
       check_out_date,
       guest_name,
       guest_phone,
+      guest_dni,
       guest_count,
       total_usd,
       sena_usd,
       vehicle_license_plate,
+      has_celiac_sin_tacc,
+      has_reduced_mobility,
     } = body;
 
     // ==================================================================
@@ -101,7 +104,7 @@ export async function POST(req: NextRequest) {
         .select('sender_type, content, created_at')
         .eq('conversation_id', conversation_id)
         .order('created_at', { ascending: false })
-        .limit(20);
+        .limit(30);
 
       const transcript = (convMsgs || [])
         .reverse()
@@ -122,6 +125,10 @@ Campos a extraer:
 - cabin_number (número de cabaña 1 a 12 adecuada para esa cantidad de personas, ej 1)
 - guest_name (nombre completo del titular si está disponible)
 - guest_phone (teléfono si fue mencionado)
+- guest_dni (DNI o Pasaporte si fue mencionado)
+- vehicle_license_plate (patente del auto si fue mencionada)
+- has_celiac_sin_tacc (true/false)
+- has_reduced_mobility (true/false)
 
 Conversación:
 ${transcript}
@@ -134,7 +141,7 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
             config: { temperature: 0.1 },
           });
 
-          const rawJson = (aiRes.text || '').replace(/```json/g, '').replace(/```/g, '').trim();
+          const rawJson = (aiRes.text || '').replace(/```json/gi, '').replace(/```/g, '').trim();
           const parsed = JSON.parse(rawJson);
 
           if (parsed.check_in_date) check_in_date = parsed.check_in_date;
@@ -142,8 +149,12 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
           if (parsed.guest_count) guest_count = Number(parsed.guest_count);
           if (parsed.total_usd) total_usd = Number(parsed.total_usd);
           if (parsed.sena_usd) sena_usd = Number(parsed.sena_usd);
-          if (parsed.guest_name && !guest_name) guest_name = parsed.guest_name;
+          if (parsed.guest_name && (!guest_name || guest_name.startsWith('Huésped'))) guest_name = parsed.guest_name;
           if (parsed.guest_phone && !guest_phone) guest_phone = parsed.guest_phone;
+          if (parsed.guest_dni && !guest_dni) guest_dni = parsed.guest_dni;
+          if (parsed.vehicle_license_plate && !vehicle_license_plate) vehicle_license_plate = parsed.vehicle_license_plate;
+          if (parsed.has_celiac_sin_tacc !== undefined && has_celiac_sin_tacc === undefined) has_celiac_sin_tacc = parsed.has_celiac_sin_tacc;
+          if (parsed.has_reduced_mobility !== undefined && has_reduced_mobility === undefined) has_reduced_mobility = parsed.has_reduced_mobility;
 
           // Asignar cabaña según número sugerido
           if (parsed.cabin_number) {
@@ -218,12 +229,19 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
     const balancePendingUsd = Math.max(0, numTotalUsd - numSenaUsd);
 
     // 4. Crear Reserva en la tabla reservations
+    const finalGuestName = (guest_name || '').trim() || 'Huésped Telegram';
+    const finalGuestPhone = (guest_phone || '').trim() || 'N/A';
+    const finalGuestDni = (guest_dni || '').trim() || 'N/A';
+    const finalPlate = vehicle_license_plate ? vehicle_license_plate.trim().toUpperCase() : null;
+
     const { data: newReservation, error: resErr } = await supabase
       .from('reservations')
       .insert({
         cabin_id: cabin.id,
-        guest_name: (guest_name || 'Huésped Telegram').trim(),
-        guest_phone: (guest_phone || '').trim() || null,
+        guest_name: finalGuestName,
+        guest_phone: finalGuestPhone,
+        guest_dni: finalGuestDni,
+        guest_email: 'telegram_guest@cabanasanto.com',
         guest_count: Number(guest_count) || 2,
         check_in_date,
         check_out_date,
@@ -240,11 +258,13 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
         sena_paid_at: new Date().toISOString(),
         balance_pending_usd: balancePendingUsd,
         parking_spot_number: cabin.cabin_number,
-        vehicle_license_plate: vehicle_license_plate ? vehicle_license_plate.trim().toUpperCase() : null,
+        vehicle_license_plate: finalPlate,
         booking_channel: 'telegram',
         breakfast_included: true,
-        has_reduced_mobility: Boolean(cabin.has_accessible_mobility),
+        has_celiac_sin_tacc: Boolean(has_celiac_sin_tacc),
+        has_reduced_mobility: has_reduced_mobility !== undefined ? Boolean(has_reduced_mobility) : Boolean(cabin.has_accessible_mobility),
         internal_notes: notes || 'Confirmada automáticamente desde CRM de Telegram',
+        created_by_role: 'recepcion',
       })
       .select('*')
       .single();
@@ -255,6 +275,25 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
     }
 
     const reservationCode = 'ANTO-' + newReservation.id.slice(0, 8).toUpperCase();
+
+    // 4b. Registrar también en la tabla bookings para sincronización integral
+    try {
+      await supabase.from('bookings').insert({
+        contact_id: contact_id || null,
+        cabin_name: `Cabaña ${cabin.cabin_number} (${cabin.name})`,
+        cabin_id: cabin.id,
+        check_in: check_in_date,
+        check_out: check_out_date,
+        guests_count: Number(guest_count) || 2,
+        total_amount: numTotalUsd,
+        currency: 'USD',
+        status: 'confirmed',
+        reservation_id: newReservation.id,
+        notes: `DNI: ${finalGuestDni}. Patente: ${finalPlate || 'Pendiente'}. Celíaco: ${has_celiac_sin_tacc ? 'Sí' : 'No'}. Movilidad: ${has_reduced_mobility ? 'Sí' : 'No'}`,
+      });
+    } catch (bkErr) {
+      console.warn('Registro secundario en bookings omitido:', bkErr);
+    }
 
     // 5. Registrar el cobro de la seña en la caja (payments)
     try {
@@ -272,12 +311,12 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
       console.warn('Error registrando pago en payments:', payErr);
     }
 
-    // 6. Actualizar teléfono en el contacto si no lo tenía
-    if (contact_id && guest_phone) {
-      await supabase
-        .from('contacts')
-        .update({ phone: guest_phone.trim(), updated_at: new Date().toISOString() })
-        .eq('id', contact_id);
+    // 6. Actualizar datos en el contacto (teléfono y nombre)
+    if (contact_id) {
+      const contactUpdates: Record<string, any> = { updated_at: new Date().toISOString() };
+      if (finalGuestPhone !== 'N/A') contactUpdates.phone = finalGuestPhone;
+      if (finalGuestName && !finalGuestName.startsWith('Huésped')) contactUpdates.full_name = finalGuestName;
+      await supabase.from('contacts').update(contactUpdates).eq('id', contact_id);
     }
 
     // 7. Notificar al huésped por Telegram con su Número Oficial de Reserva
@@ -301,11 +340,10 @@ Responde ÚNICAMENTE con el objeto JSON válido sin formato markdown ni explicac
 👥 <b>Huéspedes:</b> ${guest_count || 2} personas
 💰 <b>Seña acreditada:</b> USD $${numSenaUsd} ($${senaPaidArs.toLocaleString('es-AR')} ARS)
 💵 <b>Saldo al Check-in:</b> USD $${balancePendingUsd} (o en Pesos ARS según cotización Dólar Blue del día)
-🚗 <b>Cochera cubierta asignada:</b> Cochera Nº ${cabin.cabin_number}
-
-📌 <b>Datos para tu ficha de estadía:</b>
-1. Por favor indícanos la <b>patente (dominio)</b> de tu vehículo para el acceso a la cochera.
-2. Envíanos por este chat las <b>fotos del frente y dorso del DNI o Pasaporte</b> de los integrantes.
+🚗 <b>Cochera cubierta asignada:</b> Cochera Nº ${cabin.cabin_number}${finalPlate ? ` (Patente: <b>${finalPlate}</b>)` : ''}
+${has_celiac_sin_tacc ? '🌾 <b>Desayuno:</b> Incluye opciones Sin TACC para celíacos.\n' : ''}${has_reduced_mobility ? '♿ <b>Accesibilidad:</b> Unidad en planta baja acondicionada.\n' : ''}
+📌 <b>Documentación para tu ingreso:</b>
+${!finalPlate ? '1. Si aún no lo hiciste, por favor indícanos la <b>patente (dominio)</b> de tu vehículo para el ingreso a la cochera.\n' : ''}2. Envíanos por este chat las <b>fotos del frente y dorso del DNI o Pasaporte</b> de los integrantes para tener tu registro listo.
 
 📌 <b>Condiciones de Reserva y Cancelación:</b>
 • <b>Check-in:</b> 14:00 hs | <b>Check-out:</b> 10:00 hs.

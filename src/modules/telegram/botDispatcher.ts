@@ -272,7 +272,7 @@ export async function processTelegramUpdate(update: TelegramUpdate): Promise<{ s
       await telegram.sendMessage(chatId, docReply, { parse_mode: 'HTML' });
       return { success: true };
     } else {
-      const receiptNotice = `📄 <b>¡Comprobante de seña recibido!</b>\n\nNuestro equipo de recepción está verificando la acreditación en la cuenta bancaria. En instantes te confirmamos. ¡Muchas gracias!`;
+      const receiptNotice = `📄 <b>¡Comprobante de seña recibido!</b>\n\nNuestro equipo de recepción está verificando la acreditación bancaria. En instantes te confirmamos con tu voucher y número oficial de reserva.\n\n📌 <b>Para ir completando tu ficha de estadía:</b>\n• Indícanos la <b>patente (dominio)</b> de tu auto para registrar el ingreso a la cochera cubierta.\n• Envíanos por este chat las <b>fotos de frente y dorso del DNI o Pasaporte</b> de los huéspedes.\n• Confírmanos si algún integrante requiere desayuno <b>Sin TACC para celíacos</b> o unidad adaptada para <b>movilidad reducida</b>. ¡Muchas gracias!`;
       await supabase.from('messages').insert({
         conversation_id: conversationId,
         sender_type: 'assistant',
